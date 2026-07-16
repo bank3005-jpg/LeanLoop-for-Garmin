@@ -1,4 +1,4 @@
-# 🏃 Garmin Nutrition Coach
+# 🔁 LeanLoop for Garmin
 
 **Turn Claude into your personal, data-driven health coach — self-hosted, private, ~$0/month.**
 
@@ -7,7 +7,7 @@
 [![Cloud Run](https://img.shields.io/badge/Runs%20on-Google%20Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](requirements.txt)
 
-Your own MCP server connects Claude to your **Garmin** wearable data (34 tools) and your **Notion** workspace. A nightly job writes your *real* measured calorie burn into your food log — so your deficit numbers come from your body, not from formulas — and a built-in calibration loop checks them against your actual scale weight every two weeks.
+Your own MCP server connects Claude to your **Garmin** wearable data (34 tools) and your **Notion** workspace. A nightly job writes your *real* measured calorie burn into your food log — so your deficit numbers come from your body, not from generic formulas — and a built-in calibration loop checks them against your actual scale weight every two weeks.
 
 > Chat with Claude like a coach who has actually seen your data:
 > *"How did I sleep?" · "Coach me today" · "Why did my run feel bad?" ·* 📸 *[photo of lunch]*
@@ -17,7 +17,7 @@ Your own MCP server connects Claude to your **Garmin** wearable data (34 tools) 
 | | Feature | What it does |
 |---|---|---|
 | 📸 | **Photo food logging** | Send a meal photo → macros estimated with a documented protocol (reference-object scaling, hidden oil/sauce accounting) → auto-saved to Notion |
-| 🌙 | **Automatic day close** | Every night your server pulls the finished day's true TDEE from Garmin and writes TDEE + deficit + workouts into your log — self-heals 3 days back, colored sync tags show status at a glance |
+| 🌙 | **Automatic day close** | Every night your server pulls the finished day's true TDEE from Garmin and writes TDEE + workouts into your log (your deficit column recalculates itself instantly — it's a Notion formula) — self-heals 3 days back, colored sync tags show status at a glance |
 | 🔥 | **Progress you can see** | Cumulative deficit (≈ kg of fat) updated nightly right on your Notion food log |
 | 🏃 | **Coaching on real data** | One-call readiness verdicts, post-workout analysis (splits, HR zones, sleep context), weekly reviews, injury pattern tracking |
 | 📈 | **Second-by-second analysis** | FIT-file parsing: HR/pace/cadence streams + **aerobic decoupling** — the endurance metric real coaches use |
@@ -69,6 +69,12 @@ Claude (any device, incl. phone)
 **What if Garmin changes their API?** The community library this builds on ([python-garminconnect](https://github.com/cyberjunky/python-garminconnect)) gets patched quickly; update with one `git pull` + deploy.
 **Garmin China accounts?** Not supported (separate system).
 **No watch some days?** The nightly job falls back to your formula baseline and tags the day `estimated`.
+
+## 💬 Why this exists
+
+I'm not a programmer. I built LeanLoop together with Claude because I wanted to lose weight, get my confidence back, and just *feel better* — and I couldn't find a tracker that coached me on my **real** data instead of generic formulas. It worked for me, so I'm sharing it.
+
+I use LeanLoop every single day and keep refining it as I go. If you hit a problem or want a feature, **[open a thread in Discussions](https://github.com/bank3005-jpg/LeanLoop-for-Garmin/discussions)** — I read everything.
 
 ## 🙏 Credits
 
