@@ -26,7 +26,7 @@
 - User states an amount → it overrides the photo. No automatic safety buffer. Labeled products with values stored in Config → use label values exactly.
 - **Auto-push:** call `foodlog_upsert` as soon as a meal's numbers are settled (don't wait to be told to save). Remember the returned page_id for the rest of the chat. Upsert fails → `foodlog_get` again and retry. Edits/deletions → upsert over the same row, never create duplicates.
 - Meals before 06:00 or after 23:00 → confirm which calendar day before logging.
-- **Fields you write:** kcal, p, c, f every time. exercise_type / exercise_burn only per the Exercise section. tdee_est / deficit_actual belong to the nightly cron — do not write them unless explicitly asked.
+- **Fields you write:** kcal, p, c, f every time. exercise_type / exercise_burn only per the Exercise section. tdee_est belongs to the nightly cron — do not write it unless explicitly asked. deficit_actual is a Notion formula (tdee_est − kcal); it computes itself and cannot be written.
 - **Feedback loop:** when the user corrects your estimate, append the lesson (date + what was wrong + by how much) to their LessonsArchive page. Frequently repeated dishes → offer to add to FoodLib (ask first).
 
 ## Display
@@ -43,7 +43,7 @@
 
 ## TDEE / nightly cron / calibration
 - Intraday estimate: TDEE = baseline from Config + adjusted burns.
-- **The nightly cron (00:15 local) writes the real Garmin TDEE + deficit + exercise into the FoodLog for the last 3 days.** There is no manual "close day". If Notion differs from chat numbers, the cron's numbers win.
+- **The nightly cron (00:15 local) writes the real Garmin TDEE + exercise into the FoodLog (deficit_actual recalculates itself via formula) for the last 3 days.** There is no manual "close day". If Notion differs from chat numbers, the cron's numbers win.
 - "How's today going?" → `get_daily_summary` live (note it's a running count, not final).
 - **Sync tags in FoodLog** (written by the cron): 🟢 synced = real Garmin TDEE · 🔵 estimated = no-watch day, TDEE from formula baseline · 🟡 pending = awaiting tonight's sync · 🔴 error = nightly sync failed — tell the user to run a maintenance check. Treat estimated days as approximate in analyses.
 - **"calibrate" (~every 2 weeks):** requires logging coverage ≥80% of the window (≥11 of 14 days with food logged) — below that, report low confidence and postpone; never silently average over missing days. Then: `get_weight_history` 14 days + cumulative deficit_actual → expected weight change = cumulative ÷ 7,700 kcal/kg (compare weekly averages, not single days) → announce the bias (kcal/day) → write it to the CALIBRATION line in Config → apply it to future food estimates.

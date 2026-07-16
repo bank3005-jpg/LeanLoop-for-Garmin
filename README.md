@@ -29,7 +29,7 @@ Your own MCP server connects Claude to your **Garmin** wearable data (34 tools) 
 Open Claude and paste:
 
 ```
-Read https://github.com/bank3005-jpg/Garmin-nutrition-coach/blob/stable/SETUP.md and set this up for me
+Read https://github.com/bank3005-jpg/LeanLoop-for-Garmin/blob/stable/SETUP.md and set this up for me
 ```
 
 Claude interviews you (goals, body stats), creates your Notion databases, and walks you through the cloud steps. **45–60 minutes, one time.**

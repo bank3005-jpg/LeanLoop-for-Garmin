@@ -29,7 +29,7 @@ Collect and compute:
 
 Create a parent page `HealthTracker`, then these databases under it. Record every data-source ID you get — they're needed later.
 
-- **FoodLog** — day (title) · date (date) · kcal, p, c, f, exercise_burn, tdee_est, deficit_actual (number) · exercise_type (text) · sync (select with options: pending=yellow, synced=green, estimated=blue, error=red)
+- **FoodLog** — day (title) · date (date) · kcal, p, c, f, exercise_burn, tdee_est (number) · deficit_actual (**formula**: `prop("tdee_est") - prop("kcal")` — computes itself, the server never writes it) · exercise_type (text) · sync (select with options: pending=yellow, synced=green, estimated=blue, error=red)
 - **TrainingLog** — session (title) · type (text) · date (date) · distance_km, avg_hr, max_hr, zone4_5_pct, kcal_burn_app, kcal_burn_adjusted (number) · duration, pace, training_effect, body_signals, coach_notes (text)
 - **BodyMetrics** — day (title) · date (date) · w, h, bf, BMI, fatMass, leanMass, smm, bmr, score, visceral, whr (number) · source (select)
 - **FoodLib** — name (title) · serving (text) · kcal, p, c, f (number) · notes (text)
@@ -57,14 +57,14 @@ Then the human creates a Notion integration: [notion.so/my-integrations](https:/
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-curl -LsSO https://raw.githubusercontent.com/bank3005-jpg/Garmin-nutrition-coach/stable/gen_token.py
+curl -LsSO https://raw.githubusercontent.com/bank3005-jpg/LeanLoop-for-Garmin/stable/gen_token.py
 uv run --python 3.12 --with garminconnect gen_token.py
 ```
 
 **Windows (PowerShell):**
 ```powershell
 irm https://astral.sh/uv/install.ps1 | iex
-irm https://raw.githubusercontent.com/bank3005-jpg/Garmin-nutrition-coach/stable/gen_token.py -OutFile gen_token.py
+irm https://raw.githubusercontent.com/bank3005-jpg/LeanLoop-for-Garmin/stable/gen_token.py -OutFile gen_token.py
 uv run --python 3.12 --with garminconnect gen_token.py
 ```
 
@@ -75,7 +75,7 @@ They type their Garmin email/password (and MFA code if asked) **in the terminal*
 Human opens [console.cloud.google.com](https://console.cloud.google.com) → `>_` icon (Cloud Shell) → uploads `token.txt` (⋮ → Upload) → pastes, **one block at a time**:
 
 ```bash
-git clone https://github.com/bank3005-jpg/Garmin-nutrition-coach.git ~/garmin-mcp
+git clone https://github.com/bank3005-jpg/LeanLoop-for-Garmin.git ~/garmin-mcp
 cd ~/garmin-mcp && git checkout stable
 mv ~/token.txt .
 PROJECT=$(gcloud config get-value project)
@@ -97,7 +97,7 @@ vals = {
   "NOTION_TOKEN": "{{NOTION_SECRET}}",
   "NOTION_FOODLOG_DS": "{{FOODLOG_DATA_SOURCE_ID}}",
   "D1_DATE": "{{D1_DATE}}",
-  "PLAYBOOK_URL": "https://raw.githubusercontent.com/bank3005-jpg/Garmin-nutrition-coach/stable/playbook.md",
+  "PLAYBOOK_URL": "https://raw.githubusercontent.com/bank3005-jpg/LeanLoop-for-Garmin/stable/playbook.md",
   "TDEE_BASELINE": "{{BASELINE_TDEE_FROM_PHASE_0}}",
   "PROGRESS_PAGE_ID": "{{HEALTHTRACKER_PAGE_ID}}",
   "TZ_NAME": "{{TIMEZONE}}",
