@@ -9,7 +9,7 @@
 [![Cloud Run](https://img.shields.io/badge/Runs%20on-Google%20Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](requirements.txt)
 
-Your own MCP server connects Claude to your **Garmin** wearable data (34 tools) and your **Notion** workspace. A nightly job writes your *real* measured calorie burn into your food log — so your deficit numbers come from your body, not from generic formulas — and a built-in calibration loop checks them against your actual scale weight every two weeks.
+Your own MCP server connects Claude to your **Garmin** wearable data (35 tools) and your **Notion** workspace. A nightly job writes your *real* measured calorie burn into your food log — so your deficit numbers come from your body, not from generic formulas — and a built-in calibration loop checks them against your actual scale weight every two weeks.
 
 > Chat with Claude like a coach who has actually seen your data:
 > *"How did I sleep?" · "Coach me today" · "Why did my run feel bad?" ·* 📸 *[photo of lunch]*
@@ -51,7 +51,7 @@ Claude (any device, incl. phone)
 
 **Privacy by design:** everything runs in *your* accounts. No third party — including this repo's author — ever sees your data. The server is protected by a long random secret; Garmin credentials never pass through chat.
 
-## 🧰 What's inside (34 MCP tools)
+## 🧰 What's inside (35 MCP tools)
 
 **Wellness** sleep (+HRV, RHR, body battery) · stress · SpO2 · respiration · heart rate · daily summary
 **Training** activities & date-range search · splits · HR zones · FIT streams · aerobic decoupling · training readiness/status · VO2max · race predictions · endurance & hill scores · lactate threshold · personal records · fitness age

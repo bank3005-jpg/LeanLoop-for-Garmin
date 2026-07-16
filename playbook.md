@@ -71,7 +71,7 @@
 - Compare with the previous session of the same type — pace at equal HR is the primary metric, not raw pace. Max 3 causes, ranked; separate "data shows" from "hypothesis". Never judge fitness from a single session.
 
 ## Weekly summary (only when asked)
-- Parallel fetch: FoodLog last 7 days (foodlog_get per day) + get_activities_range 7 days + get_weight_history 14 days + get_vo2max.
+- Parallel fetch: `foodlog_get_range` last 7 days (ONE call) + get_activities_range 7 days + get_weight_history 14 days + get_vo2max.
 - Analyze: running (pace@HR trend, hard/easy ratio vs ~80/20, VO2max) · average deficit vs target · protein target hit-rate · weekly average weight. End with 1–2 focus points, no more.
 - **Watchdog:** verify the cron actually wrote tdee_est for the past week (values shouldn't be missing for >2 logged days). Anomaly = tell the user their nightly sync may be down and to run a maintenance session.
 

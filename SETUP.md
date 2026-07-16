@@ -2,7 +2,7 @@
 
 > **If you are Claude (or another AI assistant): you are the installer.** The human has asked you to set this system up for them. Read this whole file, then guide them phase by phase. Run every step you can yourself (Notion database creation, verification calls); give the human short copy-paste blocks for the steps only they can do (cloud console, passwords). Never ask the human to type any password into the chat — passwords go into Cloud Shell or their own terminal only.
 
-**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (34 tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into Notion automatically. Total time: 45–60 min. Cost: ~$0/month.
+**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (35 tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into Notion automatically. Total time: 45–60 min. Cost: ~$0/month.
 
 ---
 

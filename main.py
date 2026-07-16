@@ -112,10 +112,22 @@ def get_body_battery(date: str = "") -> dict:
     return call(lambda g: g.get_body_battery, d, d)
 
 
+_DS_KEYS = ("calendarDate", "totalKilocalories", "activeKilocalories", "bmrKilocalories",
+            "totalSteps", "dailyStepGoal", "totalDistanceMeters",
+            "moderateIntensityMinutes", "vigorousIntensityMinutes", "intensityMinutesGoal",
+            "restingHeartRate", "lastSevenDaysAvgRestingHeartRate", "minHeartRate", "maxHeartRate",
+            "averageStressLevel", "bodyBatteryMostRecentValue", "bodyBatteryAtWakeTime",
+            "bodyBatteryHighestValue", "bodyBatteryLowestValue",
+            "sleepingSeconds", "floorsAscended", "lastSyncTimestampGMT")
+
+
 @mcp.tool()
-def get_daily_summary(date: str = "") -> dict:
-    """Daily wellness summary: steps, calories, distance, intensity minutes, resting/min/max heart rate, floors."""
-    return call(lambda g: g.get_stats, day(date))
+def get_daily_summary(date: str = "", full: bool = False) -> dict:
+    """Daily wellness summary: steps, calories, distance, intensity minutes, heart rate, stress, body battery. Compact by default; full=true returns every raw field."""
+    r = call(lambda g: g.get_stats, day(date))
+    if full or not isinstance(r, dict):
+        return r
+    return {k: r[k] for k in _DS_KEYS if k in r}
 
 
 @mcp.tool()
@@ -671,6 +683,43 @@ def foodlog_get(date: str = "") -> dict:
 
 
 @mcp.tool()
+def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
+    """Read FoodLog rows for a date range (inclusive, YYYY-MM-DD) in ONE call — compact rows sorted by date. Use this for weekly summaries instead of calling foodlog_get per day."""
+    s, e = day(start_date), day(end_date)
+    flt = {"filter": {"and": [
+        {"property": "date", "date": {"on_or_after": s}},
+        {"property": "date", "date": {"on_or_before": e}},
+    ]}, "page_size": 100}
+    try:
+        try:
+            r = _notion("POST", f"/databases/{FOODLOG_DS}/query", flt, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{FOODLOG_DS}/query", flt, "2025-09-03")
+    except Exception as ex:
+        return {"error": str(ex)}
+    out = []
+    for row in r.get("results", []):
+        p = row.get("properties", {})
+
+        def num(k):
+            return (p.get(k) or {}).get("number")
+
+        def txt(k):
+            rt = (p.get(k) or {}).get("rich_text") or []
+            return "".join(t.get("plain_text", "") for t in rt) or None
+
+        title = (p.get("day") or {}).get("title") or []
+        out.append({"date": ((p.get("date") or {}).get("date") or {}).get("start"),
+                    "day": "".join(t.get("plain_text", "") for t in title) or None,
+                    "kcal": num("kcal"), "p": num("p"), "c": num("c"), "f": num("f"),
+                    "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
+                    "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
+                    "sync": (((p.get("sync") or {}).get("select")) or {}).get("name")})
+    out.sort(key=lambda x: x["date"] or "")
+    return out
+
+
+@mcp.tool()
 def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = None,
                    c: float | None = None, f: float | None = None,
                    exercise_type: str | None = None,
@@ -716,9 +765,10 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
 _playbook_cache = {"text": "", "ts": 0.0}
 
 
-@mcp.tool()
-def get_playbook() -> str:
-    """The latest coaching rules (playbook) for this system. Call this once at the start of any conversation that involves food logging, training, or coaching — then follow the returned rules."""
+_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol")
+
+
+def _pb_fetch():
     import time
     import urllib.request as _u
     url = os.environ.get("PLAYBOOK_URL", "")
@@ -735,6 +785,35 @@ def get_playbook() -> str:
         return t
     except Exception as e:
         return _playbook_cache["text"] or f"playbook fetch failed: {e}"
+
+
+@mcp.tool()
+def get_playbook(section: str = "") -> str:
+    """The latest coaching rules. Call once (no args) at the start of any food/training/coaching conversation: returns the core rules plus a list of on-demand sections. The moment an on-demand topic comes up, call again with section="<name>" to get those rules."""
+    text = _pb_fetch()
+    if "\n## " not in text:
+        return text
+    head, *parts = text.split("\n## ")
+    secs = []
+    for pt in parts:
+        h, _, b = pt.partition("\n")
+        secs.append((h.strip(), b))
+    if section:
+        q = section.lower()
+        for h, b in secs:
+            if q in h.lower():
+                return f"## {h}\n{b}"
+        return "Section not found. Available: " + " | ".join(h for h, _ in secs)
+    core = [head]
+    skipped = []
+    for h, b in secs:
+        if any(k in h.lower() for k in _PB_ONDEMAND):
+            skipped.append(h.split(" (")[0])
+        else:
+            core.append(f"## {h}\n{b}")
+    core.append('## On-demand sections (not included above)\nThe moment one of these topics comes up, call get_playbook(section="<name>") and follow it: '
+                + " · ".join(skipped))
+    return "\n".join(core)
 
 
 # ---- HTTP wiring -----------------------------------------------------------
