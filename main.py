@@ -383,17 +383,6 @@ def _find_row(d):
     return res[0] if res else None
 
 
-def _weeknum(d: str):
-    d1 = os.environ.get("D1_DATE", "")
-    if not d1:
-        return None
-    from datetime import date as _d
-    y, m, dd = map(int, d.split("-"))
-    y1, m1, dd1 = map(int, d1.split("-"))
-    n = (_d(y, m, dd) - _d(y1, m1, dd1)).days + 1
-    return (n + 6) // 7 if n > 0 else None
-
-
 def _close_one(d):
     row = _find_row(d)
     if not row:
@@ -441,9 +430,6 @@ def _close_one(d):
             new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(names)[:200]}}]}
         if (props.get("exercise_burn") or {}).get("number") in (None, 0):
             new_props["exercise_burn"] = {"number": round(burn)}
-    wk = _weeknum(d)
-    if wk and (props.get("week") or {}).get("number") is None:
-        new_props["week"] = {"number": wk}
     if not new_props:
         return {"date": d, "status": "already-synced", "tdee": tdee}
     _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
@@ -484,6 +470,12 @@ def _update_progress(page_id):
                 block_id = b["id"]
                 break
     body = {"callout": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+    try:
+        _notion("PATCH", f"/databases/{FOODLOG_DS}",
+                {"description": [{"type": "text", "text": {"content": text}}]},
+                "2022-06-28")
+    except Exception:
+        pass
     if block_id:
         _notion("PATCH", "/blocks/" + block_id, body, "2022-06-28")
     else:
@@ -691,9 +683,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         return {"error": "no fields provided"}
     if any(k in props for k in ("kcal", "p", "c", "f")) and "tdee_est" not in props:
         props["sync"] = {"select": {"name": "pending"}}
-    wk = _weeknum(d)
-    if wk:
-        props.setdefault("week", {"number": wk})
+
     try:
         row = _find_row(d)
         if row:

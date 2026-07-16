@@ -29,7 +29,7 @@ Collect and compute:
 
 Create a parent page `HealthTracker`, then these databases under it. Record every data-source ID you get — they're needed later.
 
-- **FoodLog** — day (title) · date (date) · kcal, p, c, f, exercise_burn, tdee_est, deficit_actual, week (number) · exercise_type (text) · sync (select with options: pending=yellow, synced=green, estimated=blue, error=red)
+- **FoodLog** — day (title) · date (date) · kcal, p, c, f, exercise_burn, tdee_est, deficit_actual (number) · exercise_type (text) · sync (select with options: pending=yellow, synced=green, estimated=blue, error=red)
 - **TrainingLog** — session (title) · type (text) · date (date) · distance_km, avg_hr, max_hr, zone4_5_pct, kcal_burn_app, kcal_burn_adjusted (number) · duration, pace, training_effect, body_signals, coach_notes (text)
 - **BodyMetrics** — day (title) · date (date) · w, h, bf, BMI, fatMass, leanMass, smm, bmr, score, visceral, whr (number) · source (select)
 - **FoodLib** — name (title) · serving (text) · kcal, p, c, f (number) · notes (text)
@@ -144,7 +144,7 @@ D1 (program day 1) = {{D1_DATE}}. Timezone: {{TIMEZONE}}.
 2. Send a food photo → estimate + table + auto-saved to Notion FoodLog
 3. "Coach me today" → one-call snapshot verdict
 4. Cloud Shell: `curl -s "$URL/$(cat secret.txt)/closeday"` → per-day statuses (`no-foodlog-row` is normal before any logging)
-5. After the first nightly run: FoodLog rows get a colored `sync` tag (green=real Garmin TDEE · blue=formula estimate, no-watch day · yellow=awaiting sync · red=sync failed) and a 🔥 cumulative-deficit callout appears on the HealthTracker page
+5. After the first nightly run: FoodLog rows get a colored `sync` tag (green=real Garmin TDEE · blue=formula estimate, no-watch day · yellow=awaiting sync · red=sync failed) and the 🔥 cumulative-deficit progress line appears both under the FoodLog database title and as a callout on the HealthTracker page. Tip: users may HIDE the `date` column in views (the title shows the date) — but never delete it; the server finds rows by it
 
 ## Updates
 
