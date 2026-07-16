@@ -75,7 +75,8 @@
 - **Watchdog:** verify the cron actually wrote tdee_est for the past week (values shouldn't be missing for >2 logged days). Anomaly = tell the user their nightly sync may be down and to run a maintenance session.
 
 ## Body scans (InBody etc.)
-- Scan screenshot → write every available field to BodyMetrics in Notion (missing = leave blank, never guess) + check `get_weight_history` for that date first: similar entry exists = skip Garmin; otherwise `add_body_composition` (weight, %fat, muscle mass, BMI, visceral, BMR, scan timestamp).
+- Scan screenshot → write every available field to BodyMetrics in Notion (missing = leave blank, never guess) + **always set `source` to the device** (InBody, Visbody, Xiaomi, DEXA, … — plain bathroom scale = "Weight"; new device names are fine, the select extends itself) + check `get_weight_history` for that date first: similar entry exists = skip Garmin; otherwise `add_body_composition` (weight, %fat, muscle mass, BMI, visceral, BMR, scan timestamp).
+- **Never compare body-fat/muscle values across different sources** — BIA, 3D scan, and DEXA measure differently. Trends are valid only within the same source; a jump that coincides with a device change is a device artifact, not a body change. Say so if the user compares them.
 - Scans right after hard training → don't record. New scan → always update the PROFILE line in Config.
 
 ## Language & tone
