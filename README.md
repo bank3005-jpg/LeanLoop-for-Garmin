@@ -1,49 +1,83 @@
-# Garmin Nutrition Coach
+# 🏃 Garmin Nutrition Coach
 
-Turn Claude into your personal, data-driven health coach — self-hosted, private, ~$0/month.
+**Turn Claude into your personal, data-driven health coach — self-hosted, private, ~$0/month.**
 
-Your own MCP server connects Claude to your **Garmin** wearable data (sleep, HRV, workouts, body composition — 34 tools) and your **Notion** workspace (food log, training log, body metrics). A nightly job writes your *real* daily calorie burn from Garmin into your food log automatically, so your deficit numbers are grounded in measurement, not formulas — and a built-in calibration routine checks them against your actual scale weight every two weeks.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/Protocol-MCP-blue)](https://modelcontextprotocol.io)
+[![Cloud Run](https://img.shields.io/badge/Runs%20on-Google%20Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](requirements.txt)
 
-## What you get
+Your own MCP server connects Claude to your **Garmin** wearable data (34 tools) and your **Notion** workspace. A nightly job writes your *real* measured calorie burn into your food log — so your deficit numbers come from your body, not from formulas — and a built-in calibration loop checks them against your actual scale weight every two weeks.
 
-- 📸 **Photo food logging** — send a meal photo in Claude, get macros estimated with a documented protocol (reference-object scaling, hidden oil/sauce accounting), auto-saved to Notion
-- 🌙 **Automatic day close** — at 00:15 your server pulls the finished day's true TDEE from Garmin and writes TDEE + deficit + workouts into your log. No manual steps, self-heals 3 days back
-- 🏃 **Coaching on real data** — "Coach me today" (one-call readiness verdict), post-workout analysis (splits, HR zones, sleep context), weekly reviews, injury pattern tracking
-- ⚖️ **Calibration loop** — every 2 weeks, logged deficit vs. actual weight change reveals your personal estimation bias, which then corrects future estimates
-- 🔄 **Live-updating brain** — coaching rules ship in [`playbook.md`](playbook.md) and are fetched by your server at runtime; improvements land without you touching anything
+> Chat with Claude like a coach who has actually seen your data:
+> *"How did I sleep?" · "Coach me today" · "Why did my run feel bad?" ·* 📸 *[photo of lunch]*
 
-## Architecture
+## ✨ Features
+
+| | Feature | What it does |
+|---|---|---|
+| 📸 | **Photo food logging** | Send a meal photo → macros estimated with a documented protocol (reference-object scaling, hidden oil/sauce accounting) → auto-saved to Notion |
+| 🌙 | **Automatic day close** | Every night your server pulls the finished day's true TDEE from Garmin and writes TDEE + deficit + workouts into your log — self-heals 3 days back, colored sync tags show status at a glance |
+| 🔥 | **Progress you can see** | Cumulative deficit (≈ kg of fat) updated nightly right on your Notion food log |
+| 🏃 | **Coaching on real data** | One-call readiness verdicts, post-workout analysis (splits, HR zones, sleep context), weekly reviews, injury pattern tracking |
+| 📈 | **Second-by-second analysis** | FIT-file parsing: HR/pace/cadence streams + **aerobic decoupling** — the endurance metric real coaches use |
+| ⚖️ | **Calibration loop** | Every 2 weeks: logged deficit vs. actual weight change reveals your personal estimation bias, which corrects all future estimates |
+| 🔄 | **Live-updating brain** | Coaching rules live in [`playbook.md`](playbook.md), fetched by your server at runtime — improvements reach every user instantly, no reinstall |
+
+## 🚀 Install (no coding needed)
+
+Open Claude and paste:
 
 ```
-Claude (any device) ──► your Cloud Run server (this repo, free tier)
-                              ├─► Garmin Connect (your token, your data)
-                              ├─► your Notion (food/training/body logs)
-                              └─► playbook.md (rules, served live from GitHub)
-        Cloud Scheduler ──► nightly close-day + keep-warm pings
+Read https://github.com/bank3005-jpg/Garmin-nutrition-coach/blob/stable/SETUP.md and set this up for me
 ```
 
-Everything runs in **your** accounts. No third party sees your data. The Garmin login token is created on your own computer and stored only in your server's environment.
+Claude interviews you (goals, body stats), creates your Notion databases, and walks you through the cloud steps. **45–60 minutes, one time.**
 
-## Install
+**Prerequisites:** a Garmin watch · Notion account (free) · Google account with billing enabled (stays within free tier) · Claude plan with custom connectors · Windows or macOS computer for one step.
 
-Open Claude, paste the link to [`SETUP.md`](SETUP.md), and say **"Set this up for me."** Claude will interview you, create the Notion structure, and walk you through the cloud steps (45–60 min, no coding knowledge needed).
+## 🏗️ Architecture
 
-Prerequisites: a Garmin watch, Notion account, Google account with billing enabled (stays in free tier), and a Claude plan with custom connectors.
+```
+Claude (any device, incl. phone)
+   └── your Cloud Run server  ← this repo, deployed to YOUR Google account
+         ├── Garmin Connect   ← your token, created on your own computer
+         ├── your Notion      ← food / training / body logs
+         └── playbook.md      ← coaching rules, served live from GitHub
+   Cloud Scheduler → nightly close-day job + keep-warm pings
+```
 
-## Updating
+**Privacy by design:** everything runs in *your* accounts. No third party — including this repo's author — ever sees your data. The server is protected by a long random secret; Garmin credentials never pass through chat.
 
-`git pull` + one deploy command (or a Cloud Build trigger on the `stable` branch for fully automatic updates). Coaching rules update live. See SETUP.md → Updates.
+## 🧰 What's inside (34 MCP tools)
 
-## Security notes
+**Wellness** sleep (+HRV, RHR, body battery) · stress · SpO2 · respiration · heart rate · daily summary
+**Training** activities & date-range search · splits · HR zones · FIT streams · aerobic decoupling · training readiness/status · VO2max · race predictions · endurance & hill scores · lactate threshold · personal records · fitness age
+**Body** weight history · body composition · **write** body-comp entries (log InBody/DEXA scans into Garmin)
+**System** one-call coach snapshot · direct Notion food-log read/write · live playbook loader
 
-- Your server is protected by a long random secret in its URL — treat the connector URL like a password
-- Garmin credentials never pass through chat; tokens live only in your Cloud Run env vars
-- `stable` branch = tested releases; `main` = development
+## 🔄 Updating
 
-## Disclaimer
+- **Coaching rules** — update automatically (served live from this repo)
+- **Server code** — `git pull` + one deploy command, or enable a Cloud Build trigger on `stable` for fully automatic deploys
+- Want to customize the code? **Fork** the repo and point your deployment at your fork
 
-This is a personal tracking and coaching tool, not medical advice or a medical device. Calorie and macro estimates are approximations. Consult a healthcare professional for medical decisions, and stop training and seek care for any concerning symptoms.
+## ❓ FAQ
 
-## License
+**Is it really free?** Yes — Cloud Run free tier covers personal use many times over. The setup guide includes guardrails so you stay in it.
+**Does my data go anywhere?** No. Your server, your Garmin token, your Notion. Self-hosted means self-owned.
+**What if Garmin changes their API?** The community library this builds on ([python-garminconnect](https://github.com/cyberjunky/python-garminconnect)) gets patched quickly; update with one `git pull` + deploy.
+**Garmin China accounts?** Not supported (separate system).
+**No watch some days?** The nightly job falls back to your formula baseline and tags the day `estimated`.
 
-MIT
+## 🙏 Credits
+
+Built on [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) by cyberjunky · [fitdecode](https://github.com/polyvertex/fitdecode) · [MCP](https://modelcontextprotocol.io) by Anthropic.
+
+## ⚠️ Disclaimer
+
+This is a personal tracking and coaching tool, **not medical advice or a medical device**. Calorie and macro estimates are approximations. Consult a healthcare professional for medical decisions, and stop training and seek care for any concerning symptoms.
+
+## 📄 License
+
+[MIT](LICENSE) — use it, fork it, share it.
