@@ -127,7 +127,7 @@ echo "CONNECTOR URL (keep secret): $URL/$(cat secret.txt)/mcp"
 
 1. claude.ai → Settings → Connectors → **Add custom connector** → name `Garmin`, paste the connector URL. No OAuth fields.
 2. Create a Claude Project (e.g. "Health Coach"). Enable the Garmin + Notion connectors in it.
-3. Set the project instructions to exactly this:
+3. Set the project instructions (Project page → Settings/⚙ → "Set project instructions"). **Claude: print the block below with every {{value}} already filled in from Phase 2/0 — the human should only have to copy-paste it, never edit it:**
 
 ```
 At the start of any conversation about food, training, health data, or coaching,
