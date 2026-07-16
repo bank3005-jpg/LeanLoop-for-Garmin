@@ -383,31 +383,52 @@ def _find_row(d):
     return res[0] if res else None
 
 
+def _weeknum(d: str):
+    d1 = os.environ.get("D1_DATE", "")
+    if not d1:
+        return None
+    from datetime import date as _d
+    y, m, dd = map(int, d.split("-"))
+    y1, m1, dd1 = map(int, d1.split("-"))
+    n = (_d(y, m, dd) - _d(y1, m1, dd1)).days + 1
+    return (n + 6) // 7 if n > 0 else None
+
+
 def _close_one(d):
-    stats = client().get_stats(d)
-    total = (stats or {}).get("totalKilocalories")
-    if not total:
-        return {"date": d, "status": "no-garmin-data"}
     row = _find_row(d)
     if not row:
         return {"date": d, "status": "no-foodlog-row"}
     props = row.get("properties", {})
     kcal = (props.get("kcal") or {}).get("number")
+    row_burn = (props.get("exercise_burn") or {}).get("number") or 0
+    try:
+        stats = client().get_stats(d) or {}
+    except Exception:
+        stats = {}
+    total = stats.get("totalKilocalories")
     try:
         acts = client().get_activities_by_date(d, d) or []
     except Exception:
         acts = []
-    row_burn = (props.get("exercise_burn") or {}).get("number") or 0
-    tdee = round(total)
-    if not acts and row_burn:
-        # workout done without the watch: Garmin total missed it -> add logged burn
-        tdee = round(total + row_burn)
     new_props = {}
+    if total:
+        tdee = round(total)
+        if not acts and row_burn:
+            tdee = round(total + row_burn)
+        tag = "synced"
+    else:
+        base = os.environ.get("TDEE_BASELINE", "")
+        if not base:
+            return {"date": d, "status": "no-garmin-data"}
+        tdee = round(float(base) + row_burn)
+        tag = "estimated"
     old = (props.get("tdee_est") or {}).get("number")
-    if old is None or abs(old - tdee) >= 1:
+    old_tag = (((props.get("sync") or {}).get("select")) or {}).get("name")
+    if old is None or abs(old - tdee) >= 1 or old_tag != tag:
         new_props["tdee_est"] = {"number": tdee}
         if kcal is not None:
             new_props["deficit_actual"] = {"number": tdee - kcal}
+        new_props["sync"] = {"select": {"name": tag}}
     if acts:
         cardio = ("running", "cycling", "walking", "treadmill_running",
                   "indoor_cycling", "lap_swimming", "open_water_swimming")
@@ -420,28 +441,188 @@ def _close_one(d):
             new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(names)[:200]}}]}
         if (props.get("exercise_burn") or {}).get("number") in (None, 0):
             new_props["exercise_burn"] = {"number": round(burn)}
+    wk = _weeknum(d)
+    if wk and (props.get("week") or {}).get("number") is None:
+        new_props["week"] = {"number": wk}
     if not new_props:
         return {"date": d, "status": "already-synced", "tdee": tdee}
-    try:
-        _notion("PATCH", "/pages/" + row["id"], {"properties": new_props}, "2022-06-28")
-    except Exception:
-        _notion("PATCH", "/pages/" + row["id"], {"properties": new_props}, "2025-09-03")
-    return {"date": d, "status": "updated", "tdee": tdee, "wrote": list(new_props)}
+    _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
+    return {"date": d, "status": "updated", "tdee": tdee, "tag": tag,
+            "wrote": list(new_props)}
+
+
+def _update_progress(page_id):
+    total, days = 0.0, 0
+    cursor = None
+    while True:
+        payload = {"page_size": 100}
+        if cursor:
+            payload["start_cursor"] = cursor
+        try:
+            r = _notion("POST", f"/databases/{FOODLOG_DS}/query", payload, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{FOODLOG_DS}/query", payload, "2025-09-03")
+        for row in r.get("results", []):
+            v = (row.get("properties", {}).get("deficit_actual") or {}).get("number")
+            if v is not None:
+                total += v
+                days += 1
+        if not r.get("has_more"):
+            break
+        cursor = r.get("next_cursor")
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Bangkok"))).date().isoformat()
+    text = (f"\U0001F525 Total deficit: {round(total):,} kcal \u2248 {total/7700:.1f} kg fat "
+            f"| logged days: {days} | updated {today}")
+    kids = _notion("GET", f"/blocks/{page_id}/children?page_size=100", None, "2022-06-28")
+    block_id = None
+    for b in kids.get("results", []):
+        if b.get("type") == "callout":
+            rt = (b.get("callout") or {}).get("rich_text") or []
+            if rt and rt[0].get("plain_text", "").startswith("\U0001F525"):
+                block_id = b["id"]
+                break
+    body = {"callout": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+    if block_id:
+        _notion("PATCH", "/blocks/" + block_id, body, "2022-06-28")
+    else:
+        _notion("PATCH", f"/blocks/{page_id}/children",
+                {"children": [{"object": "block", "type": "callout",
+                               "callout": {"rich_text": [{"type": "text", "text": {"content": text}}],
+                                           "icon": {"type": "emoji", "emoji": "\U0001F525"}}}]},
+                "2022-06-28")
+    return {"progress": text}
 
 
 async def closeday(request):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     from starlette.responses import JSONResponse
-    today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
+    today = datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Bangkok"))).date()
     out = []
     for i in range(1, 4):
         d = (today - timedelta(days=i)).isoformat()
         try:
             out.append(_close_one(d))
         except Exception as e:
+            try:
+                row = _find_row(d)
+                if row:
+                    _notion_write("PATCH", "/pages/" + row["id"],
+                                  {"properties": {"sync": {"select": {"name": "error"}}}})
+            except Exception:
+                pass
             out.append({"date": d, "error": str(e)})
+    page_id = os.environ.get("PROGRESS_PAGE_ID", "")
+    if page_id:
+        try:
+            out.append(_update_progress(page_id))
+        except Exception as e:
+            out.append({"progress_error": str(e)})
     return JSONResponse(out)
+
+
+# ---- FIT streams & aerobic decoupling ---------------------------------------
+def _fit_records(activity_id: str) -> list:
+    import io
+    import zipfile
+    import fitdecode
+    from garminconnect import Garmin as _G
+    g = client()
+    data = g.download_activity(str(activity_id),
+                               dl_fmt=_G.ActivityDownloadFormat.ORIGINAL)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        name = next(n for n in z.namelist() if n.lower().endswith(".fit"))
+        fit_bytes = z.read(name)
+    recs = []
+    with fitdecode.FitReader(io.BytesIO(fit_bytes)) as fr:
+        for frame in fr:
+            if isinstance(frame, fitdecode.FitDataMessage) and frame.name == "record":
+                row = {}
+                for f in ("timestamp", "heart_rate", "speed", "cadence",
+                          "power", "altitude", "distance"):
+                    if frame.has_field(f) and frame.get_value(f) is not None:
+                        row[f] = frame.get_value(f)
+                if row.get("timestamp") is not None:
+                    recs.append(row)
+    return recs
+
+
+def _decoupling_calc(recs: list, skip_warmup_min: float = 5.0) -> dict:
+    """Pure calculation so it can be unit-tested. recs: dicts with timestamp/heart_rate/speed."""
+    moving = [r for r in recs
+              if (r.get("speed") or 0) > 0.5 and (r.get("heart_rate") or 0) > 60]
+    if len(moving) < 120:
+        return {"error": "not enough moving data for decoupling analysis"}
+    t0 = moving[0]["timestamp"]
+    work = [r for r in moving
+            if (r["timestamp"] - t0).total_seconds() >= skip_warmup_min * 60]
+    if len(work) < 120:
+        work = moving
+    mid = len(work) // 2
+    h1, h2 = work[:mid], work[mid:]
+
+    def _avg(rows, key):
+        vals = [r[key] for r in rows if r.get(key)]
+        return sum(vals) / len(vals) if vals else 0
+
+    s1, hr1 = _avg(h1, "speed"), _avg(h1, "heart_rate")
+    s2, hr2 = _avg(h2, "speed"), _avg(h2, "heart_rate")
+    if not (s1 and s2 and hr1 and hr2):
+        return {"error": "missing speed/HR data"}
+    ef1, ef2 = s1 / hr1, s2 / hr2
+    dec = (ef1 - ef2) / ef1 * 100
+
+    def _pace(mps):
+        if not mps:
+            return None
+        sec = 1000 / mps
+        return f"{int(sec // 60)}:{int(sec % 60):02d}/km"
+
+    verdict = ("excellent aerobic durability (<5%)" if dec < 5 else
+               "moderate drift (5-8%) — acceptable on hard/hot days" if dec < 8 else
+               "high drift (>8%) — fatigue, heat, dehydration, or aerobic base needs work")
+    return {
+        "decoupling_pct": round(dec, 1),
+        "first_half": {"avg_pace": _pace(s1), "avg_hr": round(hr1)},
+        "second_half": {"avg_pace": _pace(s2), "avg_hr": round(hr2)},
+        "warmup_skipped_min": skip_warmup_min,
+        "interpretation": verdict,
+    }
+
+
+@mcp.tool()
+def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,cadence",
+                        max_points: int = 60) -> dict:
+    """Downsampled second-by-second sensor streams from an activity's FIT file. metrics: comma list from heart_rate,speed,cadence,power,altitude,distance. Returns ~max_points averaged buckets."""
+    def f():
+        recs = _fit_records(activity_id)
+        if not recs:
+            return {"error": "no record data in FIT file"}
+        want = [m.strip() for m in metrics.split(",") if m.strip()]
+        t0 = recs[0]["timestamp"]
+        n = max(1, len(recs) // max(1, min(max_points, 200)))
+        points = []
+        for i in range(0, len(recs), n):
+            chunk = recs[i:i + n]
+            pt = {"t_s": int((chunk[0]["timestamp"] - t0).total_seconds())}
+            for m in want:
+                vals = [r[m] for r in chunk if r.get(m) is not None]
+                if vals:
+                    pt[m] = round(sum(vals) / len(vals), 2)
+            points.append(pt)
+        return {"activity_id": str(activity_id), "raw_records": len(recs),
+                "points": points}
+    return call(lambda g: lambda: f())
+
+
+@mcp.tool()
+def get_aerobic_decoupling(activity_id: str, skip_warmup_min: float = 5.0) -> dict:
+    """Aerobic decoupling (Pa:Hr drift) for a steady activity: compares speed/HR efficiency of first vs second half. <5% = strong aerobic base. Use on steady runs/rides, not intervals."""
+    def f():
+        return _decoupling_calc(_fit_records(activity_id), skip_warmup_min)
+    return call(lambda g: lambda: f())
 
 
 # ---- FoodLog direct tools (exact date query — no fuzzy search) --------------
@@ -508,6 +689,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         props["exercise_type"] = {"rich_text": [{"text": {"content": exercise_type[:200]}}]}
     if not props:
         return {"error": "no fields provided"}
+    if any(k in props for k in ("kcal", "p", "c", "f")) and "tdee_est" not in props:
+        props["sync"] = {"select": {"name": "pending"}}
+    wk = _weeknum(d)
+    if wk:
+        props.setdefault("week", {"number": wk})
     try:
         row = _find_row(d)
         if row:
