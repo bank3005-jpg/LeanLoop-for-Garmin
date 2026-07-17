@@ -807,10 +807,10 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                    exercise_type: str | None = None,
                    exercise_burn: float | None = None,
                    tdee_est: float | None = None,
-                   meals: str | None = None,
+                   meals: list | None = None,
                    meal_note: str | None = None) -> dict:
     """Create or update the Notion FoodLog row for a date (one row per day, exact match — never creates duplicates). Only provided fields are written; omitted fields stay unchanged.
-    meals: JSON array of the FULL day's meals so far, each ["HH:MM","dish",kcal,p,c,f] — the server renders them as a clean table inside the day page (replacing the previous one, so edits/removals stay tidy). Pass the whole running list every time you log, not just the new meal.
+    meals: an ARRAY of the FULL day's meals so far, each element ["HH:MM","dish",kcal,p,c,f] — pass it as a native list, not a quoted string. The server rebuilds a clean meal table on the day page and recomputes kcal/p/c/f from it, so send the whole running list on every add/edit/remove.
     date=YYYY-MM-DD, default today."""
     d = day(date)
     parsed_meals = None
