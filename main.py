@@ -769,8 +769,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                    exercise_type: str | None = None,
                    exercise_burn: float | None = None,
                    tdee_est: float | None = None,
+                   meals: str | None = None,
                    meal_note: str | None = None) -> dict:
-    """Create or update the Notion FoodLog row for a date (one row per day, exact match — never creates duplicates). Only provided fields are written; omitted fields stay unchanged. meal_note: one-line meal record "HH:MM dish · kcal · P/C/F" — appended into the day page so the meal history is never lost. date=YYYY-MM-DD, default today."""
+    """Create or update the Notion FoodLog row for a date (one row per day, exact match — never creates duplicates). Only provided fields are written; omitted fields stay unchanged.
+    meals: JSON array of the FULL day's meals so far, each ["HH:MM","dish",kcal,p,c,f] — the server renders them as a clean table inside the day page (replacing the previous one, so edits/removals stay tidy). Pass the whole running list every time you log, not just the new meal.
+    date=YYYY-MM-DD, default today."""
     d = day(date)
     props = {}
     for k, v in (("kcal", kcal), ("p", p), ("c", c), ("f", f),
@@ -779,16 +782,55 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             props[k] = {"number": v}
     if exercise_type is not None:
         props["exercise_type"] = {"rich_text": [{"text": {"content": exercise_type[:200]}}]}
-    if not props and not meal_note:
+    if not props and not meal_note and not meals:
         return {"error": "no fields provided"}
     for _k in [k for k in list(_call_cache) if isinstance(k, tuple) and k and k[0] == "foodlog"]:
         _call_cache.pop(_k, None)
 
     note_err = [None]
 
+    def _cell(v):
+        return [{"type": "text", "text": {"content": str(v)[:200]}}]
+
+    def _row(vals, bold=False):
+        cells = [_cell(v) for v in vals]
+        if bold:
+            for c_ in cells:
+                c_[0]["annotations"] = {"bold": True}
+        return {"type": "table_row", "table_row": {"cells": cells}}
+
     def _note(pid, wrote):
-        if meal_note and pid:
-            bid = pid.replace("-", "")
+        if not pid:
+            return wrote
+        bid = pid.replace("-", "")
+        rows = None
+        if meals:
+            try:
+                import json as _j
+                data = _j.loads(meals) if isinstance(meals, str) else meals
+                rows = [[str(m[0]), str(m[1]), m[2], m[3], m[4], m[5]] for m in data]
+            except Exception as e:
+                note_err[0] = f"meals parse: {e}"
+        if rows is not None:
+            try:
+                kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
+                for b in kids.get("results", []):
+                    try:
+                        _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
+                    except Exception:
+                        pass
+                tot = [round(sum(r[i] or 0 for r in rows), 1) for i in (2, 3, 4, 5)]
+                trows = [_row(["เวลา", "รายการ", "kcal", "p", "c", "f"], bold=True)]
+                trows += [_row(r) for r in rows]
+                trows.append(_row(["", "รวม", tot[0], tot[1], tot[2], tot[3]], bold=True))
+                _notion_write("PATCH", f"/blocks/{bid}/children",
+                              {"children": [{"object": "block", "type": "table",
+                                             "table": {"table_width": 6, "has_column_header": True,
+                                                       "has_row_header": False, "children": trows}}]})
+                wrote.append("meals")
+            except Exception as e:
+                note_err[0] = str(e)
+        elif meal_note:
             try:
                 _notion_write("PATCH", f"/blocks/{bid}/children",
                               {"children": [{"object": "block", "type": "bulleted_list_item",
