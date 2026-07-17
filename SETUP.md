@@ -6,6 +6,8 @@
 
 ---
 
+> **Before you start (human, one-time):** create a Claude **Project** named **LeanLoop**, enable the **Notion** connector in it, and run this whole setup **inside a chat in that Project** using **Sonnet at Medium** effort (many IDs to track accurately). The Garmin connector gets added to the same Project in Phase 5, once the server exists. Everyday use afterward runs fine on Sonnet Low.
+
 ## Phase 0 — Interview (do this first, in chat)
 
 Collect and compute:
@@ -138,7 +140,7 @@ Expect `"ok": true`. If not: `missing_env` lists any env var left blank, and `ch
 ## Phase 5 — Connect to Claude
 
 1. claude.ai → Settings → Connectors → **Add custom connector** → name `Garmin`, paste the connector URL. No OAuth fields.
-2. Create a Claude Project (e.g. "Health Coach"). Enable the Garmin + Notion connectors in it.
+2. In the **LeanLoop Project** created before Phase 0, enable this new **Garmin** connector (the Notion connector is already on). Both must be enabled in the Project.
 3. Set the project instructions (Project page → Settings/⚙ → "Set project instructions"). **Claude: print the block below with every {{value}} already filled in from Phase 2/0 — the human should only have to copy-paste it, never edit it:**
 
 ```

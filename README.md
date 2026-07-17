@@ -37,13 +37,15 @@ Because all of it already flows to Claude, there's **no more screenshotting dash
 
 ## 🚀 Install (no coding needed)
 
-Open Claude and paste:
+1. In Claude, create a **Project** and name it **LeanLoop** (this is where your coach will live).
+2. In that Project, enable the **Notion** connector (Claude needs it to build your databases).
+3. Open a chat inside the Project — set the model to **Sonnet at Medium** effort for setup (lots of IDs to track; switch to Low for everyday use afterward) — and paste:
 
 ```
 Read https://github.com/bank3005-jpg/LeanLoop-for-Garmin/blob/stable/SETUP.md and set this up for me
 ```
 
-Claude interviews you (goals, body stats), creates your Notion databases, walks you through the cloud steps, and wires everything into a **Claude Project** — a dedicated space where your coach lives, with your server and Notion connected and your coaching rules loaded automatically in every chat. **45–60 minutes, one time.**
+Claude interviews you (goals, body stats), creates your Notion databases, walks you through the cloud steps, then adds your server as a second connector and loads the coaching rules into the Project. **45–60 minutes, one time.** After setup, everyday food logging runs fine on **Sonnet Low**.
 
 **Prerequisites:** a Garmin watch · Notion account (free) · Google account with billing enabled (stays within free tier) · **Claude Pro** (or Max/Team — needs two custom connectors at once; Free allows only one) · Windows or macOS computer for one step.
 
