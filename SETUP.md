@@ -2,7 +2,7 @@
 
 > **If you are Claude (or another AI assistant): you are the installer.** The human has asked you to set this system up for them. Read this whole file, then guide them phase by phase. Run every step you can yourself (Notion database creation, verification calls); give the human short copy-paste blocks for the steps only they can do (cloud console, passwords). Never ask the human to type any password into the chat — passwords go into Cloud Shell or their own terminal only.
 
-**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (16 lean tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into Notion automatically. Total time: 45–60 min. Cost: ~$0/month.
+**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (16 lean tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into the food log AND auto-logs every Garmin workout into the training log. Total time: 45–60 min. Cost: ~$0/month.
 
 ---
 
@@ -125,6 +125,14 @@ echo "CONNECTOR URL (keep secret): $URL/$(cat secret.txt)/mcp"
 
 **Never set `--min-instances` above 0** (that leaves the free tier, ~$8–10/month).
 
+**Immediately self-check the deploy (catches wrong Notion token/IDs in seconds instead of at midnight):**
+
+```bash
+curl -s "$URL/$(cat secret.txt)/health"; echo
+```
+
+Expect `"ok": true`. If not: `missing_env` lists any env var left blank, and `checks` shows which Notion database failed — fix that env value (rebuild env.yaml + redeploy) before moving on. Do NOT proceed to Phase 5 until `"ok": true`.
+
 ## Phase 5 — Connect to Claude
 
 1. claude.ai → Settings → Connectors → **Add custom connector** → name `Garmin`, paste the connector URL. No OAuth fields.
@@ -147,7 +155,8 @@ D1 (program day 1) = {{D1_DATE}}. Timezone: {{TIMEZONE}}.
 2. Send a food photo → estimate + table + auto-saved to Notion FoodLog
 3. "Coach me today" → one-call snapshot verdict
 4. Cloud Shell: `curl -s "$URL/$(cat secret.txt)/closeday"` → per-day statuses (`no-foodlog-row` is normal before any logging)
-5. After the first nightly run: FoodLog rows get a colored `sync` tag (green=real Garmin TDEE · blue=formula estimate, no-watch day · yellow=awaiting sync · red=sync failed) and the 🔥 cumulative-deficit progress line appears both under the FoodLog database title and as a callout on the HealthTracker page. Tip: users may HIDE the `date` column in views (the title shows the date) — but never delete it; the server finds rows by it
+5. TrainingLog: after any Garmin workout (or the nightly run), a row appears automatically per activity (type/distance/duration/pace/HR/burn); the coach enriches it with notes when you chat about the session.
+6. After the first nightly run: FoodLog rows get a colored `sync` tag (green=real Garmin TDEE · blue=formula estimate, no-watch day · yellow=awaiting sync · red=sync failed) and the 🔥 cumulative-deficit progress line appears both under the FoodLog database title and as a callout on the HealthTracker page. Tip: users may HIDE the `date` column in views (the title shows the date) — but never delete it; the server finds rows by it
 
 ## Updates
 

@@ -677,6 +677,45 @@ def _update_progress(page_id):
     return {"progress": text}
 
 
+async def health(request):
+    """Setup self-check: which env vars are set + is Notion / playbook reachable.
+    Values are never returned — only booleans/statuses. Behind the secret path."""
+    from starlette.responses import JSONResponse
+    keys = ["MCP_SECRET", "GARMINTOKENS_B64", "NOTION_TOKEN", "NOTION_FOODLOG_DS",
+            "NOTION_FOODLIB_DS", "NOTION_TRAININGLOG_DS", "CONFIG_PAGE_ID", "D1_DATE",
+            "PLAYBOOK_URL", "TDEE_BASELINE", "PROGRESS_PAGE_ID", "TZ_NAME"]
+    env = {k: bool(os.environ.get(k)) for k in keys}
+    missing = [k for k, v in env.items() if not v]
+    checks = {}
+    try:
+        try:
+            _notion("POST", f"/databases/{FOODLOG_DS}/query", {"page_size": 1}, "2022-06-28")
+        except Exception:
+            _notion("POST", f"/data_sources/{FOODLOG_DS}/query", {"page_size": 1}, "2025-09-03")
+        checks["notion_foodlog"] = "ok"
+    except Exception as e:
+        checks["notion_foodlog"] = f"FAIL: {str(e)[:150]}"
+    for dsname, dsid in (("notion_foodlib", os.environ.get("NOTION_FOODLIB_DS", "")),
+                         ("notion_traininglog", os.environ.get("NOTION_TRAININGLOG_DS", ""))):
+        if not dsid:
+            checks[dsname] = "not-set"
+            continue
+        try:
+            try:
+                _notion("POST", f"/databases/{dsid}/query", {"page_size": 1}, "2022-06-28")
+            except Exception:
+                _notion("POST", f"/data_sources/{dsid}/query", {"page_size": 1}, "2025-09-03")
+            checks[dsname] = "ok"
+        except Exception as e:
+            checks[dsname] = f"FAIL: {str(e)[:150]}"
+    try:
+        checks["playbook"] = "ok" if len(_pb_fetch()) > 100 else "empty"
+    except Exception as e:
+        checks["playbook"] = f"FAIL: {str(e)[:150]}"
+    ok = not missing and checks.get("notion_foodlog") == "ok"
+    return JSONResponse({"ok": ok, "missing_env": missing, "env_set": env, "checks": checks})
+
+
 async def closeday(request):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
@@ -1458,6 +1497,7 @@ root = Starlette(
     routes=[
         Route("/", lambda r: PlainTextResponse("ok")),
         Route(f"/{SECRET}/closeday", closeday),
+        Route(f"/{SECRET}/health", health),
         Route(f"/{SECRET}/stats", lambda r: __import__("starlette.responses", fromlist=["JSONResponse"]).JSONResponse(
             {t: {"calls": v[0], "chars": v[1], "cache_hits": v[2]} for t, v in sorted(_usage.items())})),
         Mount(f"/{SECRET}", app=mcp.streamable_http_app()),
