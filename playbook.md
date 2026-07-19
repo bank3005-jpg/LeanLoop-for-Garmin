@@ -47,7 +47,7 @@
 - Intraday estimate: TDEE = baseline from Config + adjusted burns.
 - **The nightly cron (03:00 local) writes the real Garmin TDEE + exercise into the FoodLog (deficit_actual recalculates itself via formula) for the last 3 days.** There is no manual "close day". If Notion differs from chat numbers, the cron's numbers win.
 - "How's today going?" → `get_daily_summary` live (note it's a running count, not final).
-- **Cumulative program deficit:** read it from the 🔥 progress line (FoodLog database description / parent-page callout, updated nightly) — never recompute it yourself.
+- **Cumulative program deficit:** read it from the 🔥 progress callout on the parent tracker page (updated nightly) — never recompute it yourself.
 - **Sync tags in FoodLog** (written by the cron): 🟢 synced = real Garmin TDEE · 🔵 estimated = no-watch day, TDEE from formula baseline · 🟡 pending = awaiting tonight's sync · 🔴 error = nightly sync failed — tell the user to run a maintenance check. Treat estimated days as approximate in analyses.
 - **"calibrate" (~every 2 weeks):** call **`calibrate_report`** (ONE call). If `coverage_ok` is false → report low confidence and postpone; never silently average over missing days. Otherwise announce `bias_kcal_per_day` (positive = real intake higher than logged) → write it to the CALIBRATION line in Config → apply it to future food estimates.
 

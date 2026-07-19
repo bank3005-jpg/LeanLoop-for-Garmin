@@ -660,12 +660,6 @@ def _update_progress(page_id):
                 block_id = b["id"]
                 break
     body = {"callout": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-    try:
-        _notion("PATCH", f"/databases/{FOODLOG_DS}",
-                {"description": [{"type": "text", "text": {"content": text}}]},
-                "2022-06-28")
-    except Exception:
-        pass
     if block_id:
         _notion("PATCH", "/blocks/" + block_id, body, "2022-06-28")
     else:
