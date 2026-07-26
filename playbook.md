@@ -47,6 +47,7 @@
 ## Daily calorie target (deficit-based, NOT a fixed number)
 - The target is a **consistent deficit off the day's real TDEE**, not a fixed intake. Rest day → the base intake range in Config. **Training day → the day's TDEE is higher, so eat MORE**: add back a portion of the exercise burn (Config's eat-back %) to keep the deficit inside the target range. Never leave the fixed rest-day number on a high-burn day — that creates a huge deficit and under-fuels training (poor recovery, muscle loss, the metabolic-adaptation spiral).
 - Two guardrails from Config, always: never exceed the **max daily deficit** (bigger = under-fuelling → tell them to eat more), and never eat below the **kcal floor**.
+- **Where the extra calories go on a training day:** mostly to **carbs** (the training fuel — on big days carbs may exceed the normal heavy tier); **protein stays fixed** (set by bodyweight, not by the day's burn); **fat stays in its Config range** — don't let fat balloon just to fill calories.
 - Intraday TDEE can overestimate, so only eat back a fraction (Config's %); calibration tightens this over time. Example: burn day TDEE ~3800, deficit target ~500 → eat ~3300, not the rest-day 2200.
 
 ## TDEE / nightly cron / calibration
