@@ -29,6 +29,7 @@
 - **Edit or remove a meal:** read `meals`, change/drop that entry, resend the corrected FULL list. The table and totals are rebuilt cleanly — never append a "removed" note or leave the old value. Empty list = clears the day.
 - Meals before 06:00 or after 23:00 → confirm which calendar day before logging.
 - **Fields you write:** kcal, p, c, f every time. exercise_type / exercise_burn only per the Exercise section. tdee_est belongs to the nightly cron — do not write it unless explicitly asked. deficit_actual is a Notion formula (tdee_est − kcal); it computes itself and cannot be written.
+- **Food quality (health, not just macros):** macros drive weight, quality drives health. Without nagging or extra tracking, at most once/day and only on a clear pattern, flag one of: low fiber (aim ~25–35 g/day), few vegetables, lots of added sugar, or mostly ultra-processed food — and acknowledge good whole-food choices. One short line, never a lecture.
 - **Feedback loop:** when the user corrects your estimate, append the lesson (date + what was wrong + by how much) to their LessonsArchive page. Frequently repeated dishes → offer to add to FoodLib (ask first).
 
 ## Display
@@ -42,6 +43,11 @@
 - **No watch at all:** MET fallback (walk ~60 kcal/km · run ~80 kcal/km · weights 4–5 kcal/min · combat sports 10–12 kcal/min, then apply the margins above) → log TrainingLog + write the burn into exercise_burn via `foodlog_upsert`. The cron sees Garmin has no activity that day and adds this burn to the real TDEE.
 - TrainingLog fields when available: type, date, distance, duration, pace, avg/max HR, zone4-5 %, training effect, app burn, adjusted burn. body_signals only from what the user actually says. coach_notes must compare against the previous session of the same type.
 - Garmin is on-demand only. No scheduled briefings unless the user asks for them.
+
+## Daily calorie target (deficit-based, NOT a fixed number)
+- The target is a **consistent deficit off the day's real TDEE**, not a fixed intake. Rest day → the base intake range in Config. **Training day → the day's TDEE is higher, so eat MORE**: add back a portion of the exercise burn (Config's eat-back %) to keep the deficit inside the target range. Never leave the fixed rest-day number on a high-burn day — that creates a huge deficit and under-fuels training (poor recovery, muscle loss, the metabolic-adaptation spiral).
+- Two guardrails from Config, always: never exceed the **max daily deficit** (bigger = under-fuelling → tell them to eat more), and never eat below the **kcal floor**.
+- Intraday TDEE can overestimate, so only eat back a fraction (Config's %); calibration tightens this over time. Example: burn day TDEE ~3800, deficit target ~500 → eat ~3300, not the rest-day 2200.
 
 ## TDEE / nightly cron / calibration
 - Intraday estimate: TDEE = baseline from Config + adjusted burns.
