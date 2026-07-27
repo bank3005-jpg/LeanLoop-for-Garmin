@@ -1363,10 +1363,12 @@ def _body_scans():
 
         dt = ((p.get("date") or {}).get("date") or {}).get("start")
         src = (((p.get("source") or {}).get("select")) or {}).get("name")
+        cond = (((p.get("condition") or {}).get("select")) or {}).get("name")
         fm = num("fatMass")
         if dt and fm is not None:
             out.append({"date": dt, "fatMass": fm, "leanMass": num("leanMass"),
-                        "w": num("w"), "source": src})
+                        "w": num("w"), "source": src, "condition": cond,
+                        "visceral": num("visceral"), "smm": num("smm"), "score": num("score")})
     out.sort(key=lambda x: x["date"])
     return out
 
@@ -1386,9 +1388,18 @@ def calibrate_report(days: int = 14) -> dict:
 
     # --- Preferred: InBody/body-scan fat-mass calibration (same source, latest pair) ---
     scans = _body_scans()
+
+    def _clean(s):
+        # untagged (old scans) or morning-fasted = trustworthy for a trend line
+        return s.get("condition") in (None, "", "morning-fasted")
+
     if len(scans) >= 2:
-        latest = scans[-1]
-        prior = next((s for s in reversed(scans[:-1]) if s["source"] == latest["source"]), None)
+        # prefer the latest CLEAN scan, paired with the latest prior clean same-source scan
+        pool = [s for s in scans if _clean(s)]
+        latest = pool[-1] if len(pool) >= 2 else scans[-1]
+        prior = next((s for s in reversed([x for x in (pool if len(pool) >= 2 else scans)[:-1]
+                                           if x["date"] < latest["date"]])
+                      if s["source"] == latest["source"]), None)
         if prior:
             s0, s1 = prior["date"], latest["date"]
             span = max(1, (_d.fromisoformat(s1) - _d.fromisoformat(s0)).days)
@@ -1399,7 +1410,13 @@ def calibrate_report(days: int = 14) -> dict:
                 actual_fat = round(latest["fatMass"] - prior["fatMass"], 2)
                 lean = (round(latest["leanMass"] - prior["leanMass"], 2)
                         if latest.get("leanMass") is not None and prior.get("leanMass") is not None else None)
+                _both_clean = _clean(latest) and _clean(prior)
                 out = {"method": f"body-composition ({latest['source']}) fat-mass — most reliable",
+                       "conditions": [prior.get("condition"), latest.get("condition")],
+                       "condition_note": ("both morning-fasted/clean — trust this" if _both_clean
+                                          else "scans taken under different/unknown conditions — treat bias as approximate; standardize to morning-fasted"),
+                       "visceral_change": (round(latest["visceral"] - prior["visceral"], 1)
+                                           if latest.get("visceral") is not None and prior.get("visceral") is not None else None),
                        "window": f"{s0}..{s1}", "span_days": span,
                        "days_logged": nlog, "days_required": need,
                        "coverage_ok": nlog >= need,
