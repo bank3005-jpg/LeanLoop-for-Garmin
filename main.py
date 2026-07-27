@@ -734,6 +734,14 @@ async def closeday(request):
     from starlette.responses import JSONResponse
     today = datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Bangkok"))).date()
     out = []
+    # TODAY: auto-log finished workouts to TrainingLog (do NOT close the day for TDEE —
+    # the day isn't over). A completed activity is loggable the moment it syncs.
+    try:
+        td = today.isoformat()
+        acts0 = client().get_activities_by_date(td, td) or []
+        out.append({"date": td, "status": "today-training-only", "trained": _log_training(td, acts0)})
+    except Exception as e:
+        out.append({"date": today.isoformat(), "training_error": str(e)})
     for i in range(1, 4):
         d = (today - timedelta(days=i)).isoformat()
         try:
