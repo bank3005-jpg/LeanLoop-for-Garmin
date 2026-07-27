@@ -470,6 +470,19 @@ def _fmt_dur(sec):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def _parse_dur(txt):
+    """'1:11:18' or '45:31' -> seconds. Reverse of _fmt_dur."""
+    try:
+        parts = [int(x) for x in (txt or "").strip().split(":")]
+    except Exception:
+        return None
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    return None
+
+
 def _fmt_pace(sec, km):
     if not km:
         return ""
@@ -508,20 +521,22 @@ def _log_training(d, acts):
         for row in r.get("results", []):
             rp = row.get("properties", {})
             ti = (rp.get("session") or {}).get("title") or []
+            dt = (rp.get("duration") or {}).get("rich_text") or []
             existing.append({"title": "".join(x.get("plain_text", "") for x in ti).lower(),
-                             "km": (rp.get("distance_km") or {}).get("number")})
+                             "km": (rp.get("distance_km") or {}).get("number"),
+                             "sec": _parse_dur("".join(x.get("plain_text", "") for x in dt))})
     except Exception:
         return 0
 
-    def _is_dup(name, km):
-        """A Garmin activity already has a row if an existing row's title contains
-        its name (coach titles it 'D123 <name> 5.16km') and — when both have a
-        distance — the distances roughly match (guards against two same-named runs)."""
+    def _is_dup(name, km, sec):
+        """Already logged if ANY existing row on this date matches — by duration
+        (title-independent, so renaming a row never causes a duplicate), or by
+        name-substring + distance. Duration is Garmin-exact, the most reliable key."""
         n = (name or "").lower().strip()
         for e in existing:
-            if not n:
-                continue
-            if e["title"] == n or n in e["title"]:
+            if sec and e.get("sec") and abs(sec - e["sec"]) <= 90:
+                return True
+            if n and (e["title"] == n or n in e["title"]):
                 if km and e["km"]:
                     if abs(km - e["km"]) < 0.2:
                         return True
@@ -534,7 +549,7 @@ def _log_training(d, acts):
         tkey = ((a.get("activityType") or {}).get("typeKey") or "")
         dur = a.get("duration") or 0
         km = (a.get("distance") or 0) / 1000.0
-        if _is_dup(name, round(km, 2) if km else None):
+        if _is_dup(name, round(km, 2) if km else None, int(dur) if dur else None):
             continue
         cals = a.get("calories") or 0
         props = {
