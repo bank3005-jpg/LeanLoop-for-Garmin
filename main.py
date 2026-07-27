@@ -424,6 +424,7 @@ import urllib.request as _url
 
 FOODLOG_DS = os.environ.get("NOTION_FOODLOG_DS", "")
 TRAINING_DS = os.environ.get("NOTION_TRAININGLOG_DS", "")
+BODYMETRICS_DS = os.environ.get("NOTION_BODYMETRICS_DS", "")
 
 
 def _notion(method, path, payload, version):
@@ -676,7 +677,7 @@ async def health(request):
     Values are never returned — only booleans/statuses. Behind the secret path."""
     from starlette.responses import JSONResponse
     keys = ["MCP_SECRET", "GARMINTOKENS_B64", "NOTION_TOKEN", "NOTION_FOODLOG_DS",
-            "NOTION_FOODLIB_DS", "NOTION_TRAININGLOG_DS", "CONFIG_PAGE_ID", "D1_DATE",
+            "NOTION_FOODLIB_DS", "NOTION_TRAININGLOG_DS", "NOTION_BODYMETRICS_DS", "CONFIG_PAGE_ID", "D1_DATE",
             "PLAYBOOK_URL", "TDEE_BASELINE", "PROGRESS_PAGE_ID", "TZ_NAME"]
     env = {k: bool(os.environ.get(k)) for k in keys}
     missing = [k for k, v in env.items() if not v]
@@ -1317,22 +1318,87 @@ def analyze_activity(activity_id: str = "") -> dict:
     return r
 
 
+def _body_scans():
+    """Body-composition scans with fatMass, sorted oldest->newest: date/fatMass/leanMass/w/source."""
+    if not BODYMETRICS_DS:
+        return []
+    try:
+        try:
+            r = _notion("POST", f"/databases/{BODYMETRICS_DS}/query", {"page_size": 100}, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{BODYMETRICS_DS}/query", {"page_size": 100}, "2025-09-03")
+    except Exception:
+        return []
+    out = []
+    for row in r.get("results", []):
+        p = row.get("properties", {})
+
+        def num(k):
+            return (p.get(k) or {}).get("number")
+
+        dt = ((p.get("date") or {}).get("date") or {}).get("start")
+        src = (((p.get("source") or {}).get("select")) or {}).get("name")
+        fm = num("fatMass")
+        if dt and fm is not None:
+            out.append({"date": dt, "fatMass": fm, "leanMass": num("leanMass"),
+                        "w": num("w"), "source": src})
+    out.sort(key=lambda x: x["date"])
+    return out
+
+
 @mcp.tool()
 def calibrate_report(days: int = 14) -> dict:
     """Everything the 'calibrate' routine needs in ONE call: logging coverage, cumulative deficit, weigh-in trend, expected vs actual weight change, and the estimation bias (kcal/day). Coach: check coverage_ok, announce the bias, write it to the CALIBRATION line in Config."""
     from datetime import date as _d, timedelta as _td
+
+    def _cum_deficit(s, e):
+        rows = foodlog_get_range(s, e)
+        if isinstance(rows, dict):
+            return None, None, None
+        logged = [r for r in rows if r.get("kcal") is not None]
+        defs = [r.get("deficit_actual") for r in rows if r.get("deficit_actual") is not None]
+        return round(sum(defs)), len(logged), rows
+
+    # --- Preferred: InBody/body-scan fat-mass calibration (same source, latest pair) ---
+    scans = _body_scans()
+    if len(scans) >= 2:
+        latest = scans[-1]
+        prior = next((s for s in reversed(scans[:-1]) if s["source"] == latest["source"]), None)
+        if prior:
+            s0, s1 = prior["date"], latest["date"]
+            span = max(1, (_d.fromisoformat(s1) - _d.fromisoformat(s0)).days)
+            cum, nlog, _ = _cum_deficit(s0, s1)
+            if cum is not None:
+                need = max(1, round(span * 0.8))
+                pred_fat = round(-cum / 7700, 2)
+                actual_fat = round(latest["fatMass"] - prior["fatMass"], 2)
+                lean = (round(latest["leanMass"] - prior["leanMass"], 2)
+                        if latest.get("leanMass") is not None and prior.get("leanMass") is not None else None)
+                out = {"method": f"body-composition ({latest['source']}) fat-mass — most reliable",
+                       "window": f"{s0}..{s1}", "span_days": span,
+                       "days_logged": nlog, "days_required": need,
+                       "coverage_ok": nlog >= need,
+                       "cumulative_deficit_kcal": cum,
+                       "predicted_fat_loss_kg": pred_fat,
+                       "actual_fat_loss_kg": actual_fat,
+                       "lean_mass_change_kg": lean,
+                       "bias_kcal_per_day": round((actual_fat - pred_fat) * 7700 / span),
+                       "bias_meaning": "positive = real intake ~that many kcal/day HIGHER than logged (or TDEE lower); add to future estimates. Near 0 = logging accurate.",
+                       "muscle_note": ("lean mass preserved/gained — good" if (lean is None or lean >= -0.3)
+                                       else "lean mass dropping — deficit may be too aggressive; eat more / more protein")}
+                return out
+
+    # --- Fallback: scale weigh-ins over the last `days` (noisier: water/glycogen) ---
     today = _d.today()
     start = (today - _td(days=days - 1)).isoformat()
     end = today.isoformat()
-    rows = foodlog_get_range(start, end)
-    if isinstance(rows, dict):
-        return {"error": rows.get("error")}
-    logged = [r for r in rows if r.get("kcal") is not None]
-    deficits = [r.get("deficit_actual") for r in rows if r.get("deficit_actual") is not None]
-    cum = round(sum(deficits))
-    out = {"window": f"{start}..{end}",
-           "days_logged": len(logged), "days_required": max(1, round(days * 0.8)),
-           "coverage_ok": len(logged) >= round(days * 0.8),
+    cum, nlog, rows = _cum_deficit(start, end)
+    if cum is None:
+        return {"error": "could not read FoodLog"}
+    out = {"method": "scale weigh-ins — approximate (weight includes water/glycogen; use an InBody scan for a reliable read)",
+           "window": f"{start}..{end}",
+           "days_logged": nlog, "days_required": max(1, round(days * 0.8)),
+           "coverage_ok": nlog >= round(days * 0.8),
            "cumulative_deficit_kcal": cum,
            "expected_weight_change_kg": round(-cum / 7700, 2)}
 
@@ -1348,7 +1414,7 @@ def calibrate_report(days: int = 14) -> dict:
         out["weight"] = {"points": len(pts), "first_half_avg": first,
                          "last_half_avg": last, "actual_change_kg": actual}
         out["bias_kcal_per_day"] = round((actual - out["expected_weight_change_kg"]) * 7700 / days)
-        out["bias_meaning"] = "positive = real intake ~ that many kcal/day HIGHER than logged; add it to future estimates"
+        out["bias_meaning"] = "positive = real intake ~that many kcal/day HIGHER than logged; add to future estimates. NOTE: scale is noisy — confirm with an InBody scan before trusting a large bias."
     else:
         out["weight"] = {"points": len(pts), "note": "not enough weigh-ins for a trend"}
     return out

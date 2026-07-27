@@ -56,7 +56,7 @@
 - "How's today going?" → `get_daily_summary` live (note it's a running count, not final).
 - **Cumulative program deficit:** read it from the 🔥 progress callout on the parent tracker page (updated nightly) — never recompute it yourself.
 - **Sync tags in FoodLog** (written by the cron): 🟢 synced = real Garmin TDEE · 🔵 estimated = no-watch day, TDEE from formula baseline · 🟡 pending = awaiting tonight's sync · 🔴 error = nightly sync failed — tell the user to run a maintenance check. Treat estimated days as approximate in analyses.
-- **"calibrate" (~every 2 weeks):** call **`calibrate_report`** (ONE call). If `coverage_ok` is false → report low confidence and postpone; never silently average over missing days. Otherwise announce `bias_kcal_per_day` (positive = real intake higher than logged) → write it to the CALIBRATION line in Config → apply it to future food estimates.
+- **"calibrate" (~every 2 weeks):** call **`calibrate_report`** (ONE call). It auto-prefers your latest **InBody/body-scan fat-mass** pair (reliable) and falls back to scale weigh-ins only if no scan exists. If `coverage_ok` is false → postpone, never average over missing days. Report plainly: fat lost vs predicted, **muscle change** (`muscle_note` — warn if lean mass is dropping = deficit too aggressive), and `bias_kcal_per_day` (near 0 = logging accurate; positive = eating more than logged) → write the bias to the CALIBRATION line in Config. If `method` says "scale" and the bias is large, note it may be water/glycogen — confirm with an InBody scan before acting on it.
 
 ## Carbs: fuel for tomorrow
 - Today's carb tier is set by TOMORROW's training plan (tiers in Config). Set it the moment the plan is known and state the remaining carb target.
