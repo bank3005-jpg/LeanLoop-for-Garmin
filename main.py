@@ -588,17 +588,8 @@ def _log_training(d, acts):
 
 
 def _close_one(d):
-    row = _find_row(d)
-    if not row:
-        return {"date": d, "status": "no-foodlog-row"}
-    props = row.get("properties", {})
-    kcal = (props.get("kcal") or {}).get("number")
-    row_burn = (props.get("exercise_burn") or {}).get("number") or 0
-    try:
-        stats = client().get_stats(d) or {}
-    except Exception:
-        stats = {}
-    total = stats.get("totalKilocalories")
+    # Auto-log workouts to TrainingLog FIRST — independent of whether food was
+    # logged that day (a training day with no food row must still get its rows).
     try:
         acts = client().get_activities_by_date(d, d) or []
     except Exception:
@@ -607,6 +598,17 @@ def _close_one(d):
         trained = _log_training(d, acts)
     except Exception:
         trained = 0
+    row = _find_row(d)
+    if not row:
+        return {"date": d, "status": "no-foodlog-row", "trained": trained}
+    props = row.get("properties", {})
+    kcal = (props.get("kcal") or {}).get("number")
+    row_burn = (props.get("exercise_burn") or {}).get("number") or 0
+    try:
+        stats = client().get_stats(d) or {}
+    except Exception:
+        stats = {}
+    total = stats.get("totalKilocalories")
     new_props = {}
     if total:
         tdee = round(total)
