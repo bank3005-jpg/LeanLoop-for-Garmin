@@ -1501,14 +1501,26 @@ def foodlib_find(query: str) -> list | dict:
     if c is not None:
         _bump("foodlib_find", c)[2] += 1
         return c
-    flt = {"filter": {"property": "name", "title": {"contains": q}}, "page_size": 10}
-    try:
+    def _q(term):
+        flt = {"filter": {"property": "name", "title": {"contains": term}}, "page_size": 10}
         try:
-            r = _notion("POST", f"/databases/{ds}/query", flt, "2022-06-28")
+            try:
+                return _notion("POST", f"/databases/{ds}/query", flt, "2022-06-28")
+            except Exception:
+                return _notion("POST", f"/data_sources/{ds}/query", flt, "2025-09-03")
         except Exception:
-            r = _notion("POST", f"/data_sources/{ds}/query", flt, "2025-09-03")
-    except Exception as e:
-        return {"error": str(e)}
+            return None
+    r = _q(q)
+    if r is None:
+        return {"error": "FoodLib query failed"}
+    if not r.get("results"):
+        # keyword fallback: try the core words (longest first) so
+        # "ข้าวมันไก่ ร้านเจ๊ 1 จาน" still finds "ข้าวมันไก่ — เจ๊กี"
+        for w in sorted((w for w in q.split() if len(w) >= 3), key=len, reverse=True):
+            rr = _q(w)
+            if rr and rr.get("results"):
+                r = rr
+                break
     out = []
     for row in r.get("results", []):
         p = row.get("properties", {})
