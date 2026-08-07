@@ -833,6 +833,104 @@ def _decoupling_calc(recs: list, skip_warmup_min: float = 5.0) -> dict:
     }
 
 
+def _pacing_calc(recs: list) -> dict:
+    """Lap-independent pacing read from FIT records: walk/pause detection, true
+    running pace (walks/pauses excluded), first-vs-second-half fade. Pure calculation
+    so it can be unit-tested."""
+    rows = [r for r in recs if r.get("timestamp") is not None]
+    if len(rows) < 120:
+        return {"error": "not enough data for pacing analysis"}
+    run_cads = sorted(r["cadence"] for r in rows
+                      if (r.get("speed") or 0) >= 2.3 and r.get("cadence"))
+    cad_thr = run_cads[len(run_cads) // 2] * 0.8 if len(run_cads) >= 60 else None
+
+    def _cls(r):
+        sp = r.get("speed") or 0
+        if sp <= 0.5:
+            return "pause"
+        cad = r.get("cadence")
+        if cad_thr and cad and cad < cad_thr and sp < 2.6:
+            return "walk"
+        if not cad_thr and sp < 1.9:
+            return "walk"
+        return "run"
+
+    t0 = rows[0]["timestamp"]
+    state_time = {"run": 0.0, "walk": 0.0, "pause": 0.0}
+    run_dist = 0.0
+    km_walk = {}
+    walk_segs = []
+    cur = None  # [state, duration_s]
+    prev = rows[0]
+    for r in rows[1:]:
+        dt = (r["timestamp"] - prev["timestamp"]).total_seconds()
+        if dt <= 0:
+            prev = r
+            continue
+        if dt > 10:  # gap in records = watch (auto-)paused
+            state_time["pause"] += dt
+            prev = r
+            continue
+        st = _cls(prev)
+        state_time[st] += dt
+        if st == "run":
+            run_dist += (prev.get("speed") or 0) * dt
+        elif st == "walk":
+            km = int((prev.get("distance") or 0) // 1000)
+            km_walk[km] = km_walk.get(km, 0) + dt
+        if cur and cur[0] == st:
+            cur[1] += dt
+        else:
+            if cur and cur[0] == "walk" and cur[1] >= 10:
+                walk_segs.append(cur[1])
+            cur = [st, dt]
+        prev = r
+    if cur and cur[0] == "walk" and cur[1] >= 10:
+        walk_segs.append(cur[1])
+
+    runrows = [r for r in rows if _cls(r) == "run" and r.get("speed")]
+    fade = None
+    if len(runrows) >= 120:
+        mid = len(runrows) // 2
+        s1 = sum(r["speed"] for r in runrows[:mid]) / mid
+        s2 = sum(r["speed"] for r in runrows[mid:]) / (len(runrows) - mid)
+        if s1:
+            fade = round((s1 - s2) / s1 * 100, 1)
+
+    def _pace(mps):
+        if not mps:
+            return None
+        sec = 1000 / mps
+        return f"{int(sec // 60)}:{int(sec % 60):02d}/km"
+
+    run_t = state_time["run"]
+    out = {
+        "elapsed_min": round((rows[-1]["timestamp"] - t0).total_seconds() / 60, 1),
+        "run_min": round(run_t / 60, 1),
+        "walk_min": round(state_time["walk"] / 60, 1),
+        "pause_min": round(state_time["pause"] / 60, 1),
+        "walk_breaks": len(walk_segs),
+        "longest_walk_s": round(max(walk_segs, default=0)),
+        "walk_by_km": {f"km{k + 1}": round(v) for k, v in sorted(km_walk.items()) if v >= 5},
+        "true_run_pace": _pace(run_dist / run_t if run_t else 0),
+        "fade_pct": fade,
+    }
+    if fade is not None:
+        out["fade_note"] = (
+            "even pacing" if abs(fade) < 3 else
+            f"negative split — second half {abs(fade):.0f}% faster" if fade < 0 else
+            "faded — second half slower; check pacing/fuel" if fade < 8 else
+            "blew up — went out too fast or under-fuelled")
+    return out
+
+
+def get_activity_pacing(activity_id: str) -> dict:
+    """Walk/pause detection + pacing fade from the FIT file: true running pace (walks excluded), walk seconds per km, first-vs-second-half fade."""
+    def f():
+        return _pacing_calc(_fit_records(activity_id))
+    return call(lambda g: lambda: f())
+
+
 def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,cadence",
                         max_points: int = 60) -> dict:
     """Downsampled second-by-second sensor streams from an activity's FIT file. metrics: comma list from heart_rate,speed,cadence,power,altitude,distance. Returns ~max_points averaged buckets."""
@@ -1168,7 +1266,7 @@ def get_activities(start_date: str = "", end_date: str = "", limit: int = 10,
 def get_activity(activity_id: str, view: str = "summary",
                  metrics: str = "heart_rate,speed,cadence", max_points: int = 60,
                  skip_warmup_min: float = 5.0) -> dict | list:
-    """One activity, one view. view = summary (cadence/power/dynamics/weather) | splits (per-km pace/HR) | hr_zones (time per HR zone) | stream (downsampled FIT sensor series; metrics/max_points apply) | decoupling (Pa:Hr aerobic drift, steady sessions only; skip_warmup_min applies). Get activity_id from get_activities."""
+    """One activity, one view. view = summary (cadence/power/dynamics/weather) | splits (per-km pace/HR) | hr_zones (time per HR zone) | stream (downsampled FIT sensor series; metrics/max_points apply) | decoupling (Pa:Hr aerobic drift, steady sessions only; skip_warmup_min applies) | pacing (walk/pause detection from FIT: true running pace excluding walks, walk seconds per km, first-vs-second-half fade — use when overall pace may be misleading). Get activity_id from get_activities."""
     v = view.strip().lower()
     if v == "summary":
         return get_activity_details(activity_id)
@@ -1180,7 +1278,9 @@ def get_activity(activity_id: str, view: str = "summary",
         return get_activity_stream(activity_id, metrics, max_points)
     if v == "decoupling":
         return get_aerobic_decoupling(activity_id, skip_warmup_min)
-    return {"error": f"unknown view '{view}'", "valid": ["summary", "splits", "hr_zones", "stream", "decoupling"]}
+    if v == "pacing":
+        return get_activity_pacing(activity_id)
+    return {"error": f"unknown view '{view}'", "valid": ["summary", "splits", "hr_zones", "stream", "decoupling", "pacing"]}
 
 
 @mcp.tool()
@@ -1279,7 +1379,7 @@ def weekly_report(days: int = 7) -> dict:
 
 @mcp.tool()
 def analyze_activity(activity_id: str = "") -> dict:
-    """Full post-workout analysis bundle in ONE call: session summary, per-split pace/HR, HR zones, aerobic decoupling (steady sessions >=25 min), the previous SAME-type session for comparison, the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), and day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
+    """Full post-workout analysis bundle in ONE call: session summary, per-lap splits (pace/HR/maxHR/cadence), HR zones, aerobic decoupling (steady sessions >=25 min), `pacing` (runs >=15 min: walk/pause detection, true running pace excluding walks, walk seconds per km, first-vs-second-half fade — the overall pace can lie; this shows why), the previous SAME-type session for comparison, the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), and day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
     from datetime import date as _d, timedelta as _td
 
     def f(g):
@@ -1301,20 +1401,34 @@ def analyze_activity(activity_id: str = "") -> dict:
             laps = (g.get_activity_splits(aid) or {}).get("lapDTOs") or []
             res["splits"] = [{"km": round((l.get("distance") or 0) / 1000, 2),
                               "min": round((l.get("duration") or 0) / 60, 2),
-                              "avgHR": l.get("averageHR")} for l in laps]
+                              "pace": _fmt_pace(l.get("movingDuration") or l.get("duration"),
+                                                (l.get("distance") or 0) / 1000) or None,
+                              "avgHR": l.get("averageHR"), "maxHR": l.get("maxHR"),
+                              "cad": l.get("averageRunCadence")} for l in laps]
         except Exception as e:
             res["splits_error"] = str(e)
         try:
             res["hr_zones"] = g.get_activity_hr_in_timezones(aid)
         except Exception as e:
             res["hr_zones_error"] = str(e)
+        recs = None
         try:
-            if (meta.get("duration") or 0) >= 1500:
-                res["decoupling"] = _decoupling_calc(_fit_records(aid))
-            else:
+            if (meta.get("duration") or 0) >= 900:
+                recs = _fit_records(aid)
+        except Exception as e:
+            res["fit_error"] = str(e)
+        try:
+            if (meta.get("duration") or 0) < 1500:
                 res["decoupling"] = "skipped (<25 min)"
+            elif recs:
+                res["decoupling"] = _decoupling_calc(recs)
         except Exception as e:
             res["decoupling_error"] = str(e)
+        try:
+            if recs and ("run" in tkey or "walk" in tkey or "hik" in tkey):
+                res["pacing"] = _pacing_calc(recs)
+        except Exception as e:
+            res["pacing_error"] = str(e)
         try:
             if start_local and tkey:
                 back = (_d.fromisoformat(start_local) - _td(days=60)).isoformat()
