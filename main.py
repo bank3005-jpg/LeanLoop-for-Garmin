@@ -1115,15 +1115,13 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             parsed_meals = [[str(m[0]), str(m[1]), float(m[2]), float(m[3]),
                              float(m[4]), float(m[5])] for m in data]
 
-            # keep the day's table in eating order: 24h HH:MM, but 00:00-04:59
-            # count as end-of-day (a 02:00 night-out snack sits after 23:00,
-            # not before breakfast). Unparseable times sort last.
+            # keep the day's table in clock order: standard calendar day,
+            # 00:00 -> 23:59 (01:00 = early morning, sorts first; 23:00 last).
+            # Unparseable times sort last.
             def _mealkey(m):
                 t = str(m[0])
                 try:
-                    hh, mm = int(t[:2]), int(t[3:5])
-                    v = hh * 60 + mm
-                    return v + 1440 if hh < 5 else v
+                    return int(t[:2]) * 60 + int(t[3:5])
                 except Exception:
                     return 99999
             parsed_meals.sort(key=_mealkey)
