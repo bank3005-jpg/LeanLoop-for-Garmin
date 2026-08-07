@@ -74,10 +74,16 @@ def slim(obj, max_list=40, depth=0):
 
 
 def day(d: str) -> str:
-    if not d or d in ("today",):
-        return date.today().isoformat()
+    # Bank's local day (Asia/Bangkok). Cloud Run runs in UTC, so a bare
+    # date.today() is up to 7h behind and mis-files 00:00-07:00 meals to
+    # the previous day. Always resolve "today"/"yesterday" in the user's TZ.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Bangkok"))).date()
+    if not d or d == "today":
+        return today.isoformat()
     if d == "yesterday":
-        return (date.today() - timedelta(days=1)).isoformat()
+        return (today - timedelta(days=1)).isoformat()
     return d
 
 
@@ -1108,6 +1114,19 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             data = _j.loads(meals) if isinstance(meals, str) else meals
             parsed_meals = [[str(m[0]), str(m[1]), float(m[2]), float(m[3]),
                              float(m[4]), float(m[5])] for m in data]
+
+            # keep the day's table in eating order: 24h HH:MM, but 00:00-04:59
+            # count as end-of-day (a 02:00 night-out snack sits after 23:00,
+            # not before breakfast). Unparseable times sort last.
+            def _mealkey(m):
+                t = str(m[0])
+                try:
+                    hh, mm = int(t[:2]), int(t[3:5])
+                    v = hh * 60 + mm
+                    return v + 1440 if hh < 5 else v
+                except Exception:
+                    return 99999
+            parsed_meals.sort(key=_mealkey)
             # totals computed from the meal table = single source of truth
             kcal = round(sum(m[2] for m in parsed_meals))
             p = round(sum(m[3] for m in parsed_meals), 1)
