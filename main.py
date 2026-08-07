@@ -73,13 +73,17 @@ def slim(obj, max_list=40, depth=0):
     return obj
 
 
-def day(d: str) -> str:
-    # Bank's local day (Asia/Bangkok). Cloud Run runs in UTC, so a bare
-    # date.today() is up to 7h behind and mis-files 00:00-07:00 meals to
-    # the previous day. Always resolve "today"/"yesterday" in the user's TZ.
+def _today_local():
+    # Single source of truth for "today". Cloud Run runs in UTC, so a bare
+    # date.today() is up to 7h behind and mis-files 00:00-07:00 events to the
+    # previous day. Everything that means "the user's today" must go through here.
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    today = datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Bangkok"))).date()
+    return datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Bangkok"))).date()
+
+
+def day(d: str) -> str:
+    today = _today_local()
     if not d or d == "today":
         return today.isoformat()
     if d == "yesterday":
@@ -372,8 +376,8 @@ def get_coach_snapshot() -> dict:
     """ONE-CALL coaching snapshot: today's training readiness, last night's sleep summary (score/HRV/RHR/body battery), today's status, and last 7 days activities (compact). Prefer this over separate calls for daily coaching questions."""
     def f(g):
         from datetime import date as _d, timedelta as _td
-        today = _d.today().isoformat()
-        week_ago = (_d.today() - _td(days=7)).isoformat()
+        today = _today_local().isoformat()
+        week_ago = (_today_local() - _td(days=7)).isoformat()
         out = {}
         try:
             tr = g.get_training_readiness(today)
@@ -1053,7 +1057,7 @@ def foodlog_get(date: str = "") -> dict:
 def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
     """Read FoodLog rows for a date range (inclusive, YYYY-MM-DD) in ONE call — compact rows sorted by date. Use this for weekly summaries instead of calling foodlog_get per day."""
     s, e = day(start_date), day(end_date)
-    _today = date.today().isoformat()
+    _today = _today_local().isoformat()
     _ck = ("foodlog", s, e)
     _cached = _cget(_ck)
     if _cached is not None:
@@ -1337,7 +1341,7 @@ def _avg(vals):
 def weekly_report(days: int = 7) -> dict:
     """Pre-digested weekly review in ONE call: food averages + logging coverage + cron watchdog, activity list + totals, 14-day weight trend, VO2max. Coach: narrate and compare against Config targets — do NOT re-fetch the raw data behind this."""
     from datetime import date as _d, timedelta as _td
-    today = _d.today()
+    today = _today_local()
     start = (today - _td(days=days - 1)).isoformat()
     end = today.isoformat()
     out = {"window": f"{start}..{end}"}
@@ -1484,8 +1488,8 @@ def analyze_activity(activity_id: str = "") -> dict:
         # timing-aware pre-workout fuel: meals eaten in the 4h before the session start
         try:
             stime = start_full[11:16]
-            day = foodlog_get(sdate)
-            meals = day.get("meals") or [] if isinstance(day, dict) else []
+            dayrow = foodlog_get(sdate)
+            meals = dayrow.get("meals") or [] if isinstance(dayrow, dict) else []
             if stime:
                 start_min = int(stime[:2]) * 60 + int(stime[3:5])
                 pre = []
@@ -1597,7 +1601,7 @@ def calibrate_report(days: int = 14) -> dict:
                 return out
 
     # --- Fallback: scale weigh-ins over the last `days` (noisier: water/glycogen) ---
-    today = _d.today()
+    today = _today_local()
     start = (today - _td(days=days - 1)).isoformat()
     end = today.isoformat()
     cum, nlog, rows = _cum_deficit(start, end)
