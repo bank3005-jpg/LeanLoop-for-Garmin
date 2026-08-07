@@ -1279,7 +1279,7 @@ def weekly_report(days: int = 7) -> dict:
 
 @mcp.tool()
 def analyze_activity(activity_id: str = "") -> dict:
-    """Full post-workout analysis bundle in ONE call: session summary, per-split pace/HR, HR zones, aerobic decoupling (steady sessions >=25 min), the previous session of the SAME type for comparison, and the day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
+    """Full post-workout analysis bundle in ONE call: session summary, per-split pace/HR, HR zones, aerobic decoupling (steady sessions >=25 min), the previous SAME-type session for comparison, the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), and day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
     from datetime import date as _d, timedelta as _td
 
     def f(g):
@@ -1328,18 +1328,53 @@ def analyze_activity(activity_id: str = "") -> dict:
                     res["previous_same_type"] = None
         except Exception as e:
             res["previous_error"] = str(e)
+        try:
+            back3 = (_d.fromisoformat(start_local) - _td(days=3)).isoformat()
+            recent = [a for a in (g.get_activities_by_date(back3, start_local) or [])
+                      if str(a.get("activityId")) != str(aid)]
+            res["recent_load_3d"] = {"sessions": len(recent),
+                                     "total_min": round(sum((a.get("duration") or 0) for a in recent) / 60)}
+        except Exception as e:
+            res["recent_load_error"] = str(e)
         res["_date"] = start_local
+        res["_start"] = str(meta.get("startTimeLocal") or "")
         return res
 
     r = call(lambda g: lambda: f(g))
     if isinstance(r, dict) and r.get("_date"):
+        sdate = r.pop("_date", "")
+        start_full = r.pop("_start", "")
         try:
-            prev_day = (_d.fromisoformat(r["_date"]) - _td(days=1)).isoformat()
+            prev_day = (_d.fromisoformat(sdate) - _td(days=1)).isoformat()
             rows = foodlog_get_range(prev_day, prev_day)
             r["day_before_carbs_g"] = rows[0].get("c") if isinstance(rows, list) and rows else None
         except Exception:
             pass
-        r.pop("_date", None)
+        # timing-aware pre-workout fuel: meals eaten in the 4h before the session start
+        try:
+            stime = start_full[11:16]
+            day = foodlog_get(sdate)
+            meals = day.get("meals") or [] if isinstance(day, dict) else []
+            if stime:
+                start_min = int(stime[:2]) * 60 + int(stime[3:5])
+                pre = []
+                for m in meals:
+                    t = str(m[0])
+                    try:
+                        mmin = int(t[:2]) * 60 + int(t[3:5])
+                    except Exception:
+                        continue
+                    if 0 <= (start_min - mmin) <= 240:
+                        pre.append(m)
+                last = max(pre, key=lambda m: str(m[0])) if pre else None
+                r["pre_workout_fuel"] = {
+                    "window": "4h before start",
+                    "kcal": round(sum(m[2] for m in pre)),
+                    "carbs_g": round(sum(m[4] for m in pre)),
+                    "fasted": len(pre) == 0,
+                    "last_meal_before": (f"{last[0]} {last[1]}" if last else None)}
+        except Exception:
+            pass
     return r
 
 
