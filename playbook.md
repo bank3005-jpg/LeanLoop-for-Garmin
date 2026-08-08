@@ -106,7 +106,7 @@ Load the **Coaching brain** section once for the answer shape.
 ## Weekly summary (only when asked)
 - Call **`weekly_report`** (ONE call — food averages, coverage, activities, weight trend, VO2max, all pre-computed; don't re-fetch the raw data).
 - Narrate: running (pace@HR trend, hard/easy ratio vs ~80/20, VO2max) · avg deficit & protein vs Config targets · weekly average weight. End with 1–2 focus points, no more.
-- **Go beyond the averages (this is the coaching):** weekly_report gives the mean — the story is in the outliers. When protein / deficit / pace-at-HR looks off, pull the per-day rows (`foodlog_read` across the week) and name the EXACT days that missed target and why (rest day? night out? skipped breakfast?). "protein short Tue & Fri" beats "avg protein 165". For runs, compare each session's pace-at-HR + fade day-by-day, not the weekly average pace.
+- **Go beyond the averages (this is the coaching):** weekly_report gives the mean AND per-day rows in `food.by_day` — read `by_day` and name the EXACT days that missed protein/deficit target and why (rest day? night out? skipped breakfast?). "protein short Tue & Fri" beats "avg protein 165". For runs, compare each session's pace-at-HR + fade day-by-day (the `activities` list), not the weekly average pace.
 - **Watchdog:** if `cron_missing_tdee` > 2, the nightly sync may be down — tell the user to run a maintenance session.
 
 ## Body scans (InBody etc.)

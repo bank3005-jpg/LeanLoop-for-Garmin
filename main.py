@@ -1339,7 +1339,7 @@ def _avg(vals):
 
 @mcp.tool()
 def weekly_report(days: int = 7) -> dict:
-    """Pre-digested weekly review in ONE call: food averages + logging coverage + cron watchdog, activity list + totals, 14-day weight trend, VO2max. Coach: narrate and compare against Config targets — do NOT re-fetch the raw data behind this."""
+    """Pre-digested weekly review in ONE call: food averages **plus per-day rows (`food.by_day`)**, logging coverage + cron watchdog, activity list + totals, 14-day weight trend, VO2max. Coach: narrate averages to frame, then use by_day to name the specific days that missed target — do NOT re-fetch the raw data behind this."""
     from datetime import date as _d, timedelta as _td
     today = _today_local()
     start = (today - _td(days=days - 1)).isoformat()
@@ -1360,6 +1360,12 @@ def weekly_report(days: int = 7) -> dict:
         "cron_missing_tdee": sum(1 for r in logged
                                  if r.get("tdee_est") is None and r.get("date") != end),
     }
+    # per-day breakdown so the coach can name the specific days that missed target
+    # (granularity > averages) — no extra fetch needed
+    out["food"]["by_day"] = [{"date": r.get("date"), "kcal": r.get("kcal"),
+                              "p": r.get("p"), "c": r.get("c"), "f": r.get("f"),
+                              "deficit": r.get("deficit_actual"), "sync": r.get("sync")}
+                             for r in rows]
 
     def f(g):
         res = {}
