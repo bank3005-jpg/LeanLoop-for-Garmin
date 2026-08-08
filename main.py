@@ -1406,7 +1406,7 @@ def weekly_report(days: int = 7) -> dict:
 
 @mcp.tool()
 def analyze_activity(activity_id: str = "") -> dict:
-    """Full post-workout analysis bundle in ONE call: session summary, per-lap splits (pace/HR/maxHR/cadence), HR zones, aerobic decoupling (steady sessions >=25 min), `pacing` (runs >=15 min: walk/pause detection, true running pace excluding walks, walk seconds per km, first-vs-second-half fade — the overall pace can lie; this shows why), the previous SAME-type session for comparison, the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), and day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
+    """Full post-workout analysis bundle in ONE call: session summary, per-lap splits (pace/HR/maxHR/cadence), HR zones, aerobic decoupling (steady sessions >=25 min), `pacing` (runs >=15 min: walk/pause detection, true running pace excluding walks, walk seconds per km, first-vs-second-half fade — the overall pace can lie; this shows why), the previous SAME-type session PLUS `same_type_history` (last 8 same-type sessions, compact pace@HR — for a real trend, not just vs the last one), the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), and day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
     from datetime import date as _d, timedelta as _td
 
     def f(g):
@@ -1462,11 +1462,28 @@ def analyze_activity(activity_id: str = "") -> dict:
                 prev = [a for a in (g.get_activities_by_date(back, start_local, tkey) or [])
                         if str(a.get("activityId")) != str(aid)
                         and str(a.get("startTimeLocal", "")) < str(meta.get("startTimeLocal", ""))]
-                if prev:
-                    p = sorted(prev, key=lambda a: str(a.get("startTimeLocal", "")))[-1]
+                prev_sorted = sorted(prev, key=lambda a: str(a.get("startTimeLocal", "")))
+                if prev_sorted:
+                    p = prev_sorted[-1]
                     res["previous_same_type"] = {k: p.get(k) for k in _ACT_KEEP if p.get(k) is not None}
+
+                    # trend history: last up to 8 same-type sessions, compact pace@HR —
+                    # granularity so the coach sees WHICH days ran well/badly across time,
+                    # not just vs the immediately previous session.
+                    def _hist(a):
+                        dur = a.get("duration") or 0
+                        dist = (a.get("distance") or 0) / 1000.0
+                        return {"date": str(a.get("startTimeLocal", ""))[:10],
+                                "time": str(a.get("startTimeLocal", ""))[11:16],
+                                "km": round(dist, 2) if dist else None,
+                                "pace": _fmt_pace(dur, dist) if dist else None,
+                                "avgHR": a.get("averageHR"), "maxHR": a.get("maxHR"),
+                                "TE_aer": a.get("aerobicTrainingEffect"),
+                                "cad": a.get("averageRunningCadenceInStepsPerMinute")}
+                    res["same_type_history"] = [_hist(a) for a in prev_sorted[-8:]]
                 else:
                     res["previous_same_type"] = None
+                    res["same_type_history"] = []
         except Exception as e:
             res["previous_error"] = str(e)
         try:
