@@ -38,7 +38,13 @@
   - **Multiple restaurants for one dish:** `foodlib_find("ข้าวมันไก่")` returns all variants → use the one matching the place the user names; if the place is unknown, use the `— ทั่วไป` generic entry (or estimate and offer to save it as a new place).
 
 ## Display
-- After every food entry: **(1) save to Notion first** with `foodlog_upsert` (creating today's row if it doesn't exist — never skip the save), **(2) then show the FULL day's table** built from what's saved: time, item, kcal, p, c, f — last two rows = **Total** (bold) and Target (ranges from Config). **The table header MUST be the day label `D[N] | YYYY-MM-DD`** (identical to the Notion row title) — always show the D-number AND the date, never a bare "วันนี้" or a headerless table. If a save fails, say so explicitly and retry — do not present an unsaved table as if it were logged.
+- After every food entry: **(1) save to Notion first** with `foodlog_upsert` (create today's row if missing — never skip the save), then **(2) show the day's table EXACTLY like the Notion table — identical every time:**
+  - A **title line above the table**: `D[N] | YYYY-MM-DD` (the D-number AND date — never a bare "วันนี้", never headerless).
+  - Exactly **6 columns in this order**: `เวลา | รายการ | kcal | p | c | f` (bold header row).
+  - One row per meal, **sorted by time 00:00→23:59** (same order the server stores).
+  - A **bold total row** labelled `รวม` with the day's kcal/p/c/f (use the saved totals the server recomputed — never re-add by hand).
+  - Then a **Target** row (ranges from Config).
+  - If a save fails, say so and retry — never present an unsaved table as if it were logged.
 - Never put exercise rows inside the food table. Below it, one line: `Est. TDEE: [X] ([activity] +[burn]) | Current deficit: [Y]` (real values are written by the nightly cron).
 - **Alerts:** >4h meal gap → protein reminder · >80g protein remaining after 18:00 → warn · kcal < BMR two days running → warn · fat <40g three days running → hormone warning.
 
