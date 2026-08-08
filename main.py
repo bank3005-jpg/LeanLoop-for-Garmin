@@ -1406,7 +1406,7 @@ def weekly_report(days: int = 7) -> dict:
 
 @mcp.tool()
 def analyze_activity(activity_id: str = "") -> dict:
-    """Full post-workout analysis bundle in ONE call: session summary, per-lap splits (pace/HR/maxHR/cadence), HR zones, aerobic decoupling (steady sessions >=25 min), `pacing` (runs >=15 min: walk/pause detection, true running pace excluding walks, walk seconds per km, first-vs-second-half fade — the overall pace can lie; this shows why), the previous SAME-type session PLUS `same_type_history` (last 8 same-type sessions, compact pace@HR — for a real trend, not just vs the last one), the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), and day-before carbs. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
+    """Full post-workout analysis bundle in ONE call: session summary, per-lap splits (pace/HR/maxHR/cadence), HR zones, aerobic decoupling (steady sessions >=25 min), `pacing` (runs >=15 min: walk/pause detection, true running pace excluding walks, walk seconds per km, first-vs-second-half fade — the overall pace can lie; this shows why), the previous SAME-type session PLUS `same_type_history` (last 8 same-type sessions, compact pace@HR — for a real trend, not just vs the last one), the pre-workout fuel (what was eaten in the 4h before the start — timing-aware, flags fasted), the last-3-day training load (cumulative fatigue), day-before carbs, and **`sleep_before`** (the night before the run: score/HRV/RHR/hours). `pre_workout_fuel` now includes full macros (p/c/f) and hours-before the last pre-run meal. Default = latest activity. Coach: compare pace at equal HR vs previous, max 3 ranked causes — do NOT re-fetch the raw data behind this."""
     from datetime import date as _d, timedelta as _td
 
     def f(g):
@@ -1494,6 +1494,20 @@ def analyze_activity(activity_id: str = "") -> dict:
                                      "total_min": round(sum((a.get("duration") or 0) for a in recent) / 60)}
         except Exception as e:
             res["recent_load_error"] = str(e)
+        # sleep the night BEFORE this run (Garmin sleep on the run's date = that night) —
+        # one of the two biggest levers on how a run goes; always include it.
+        try:
+            if start_local:
+                s = g.get_sleep_data(start_local) or {}
+                dto = s.get("dailySleepDTO") or {}
+                res["sleep_before"] = {
+                    "score": ((dto.get("sleepScores") or {}).get("overall") or {}).get("value"),
+                    "hours": round((dto.get("sleepTimeSeconds") or 0) / 3600, 1),
+                    "avgOvernightHrv": s.get("avgOvernightHrv"),
+                    "hrvStatus": s.get("hrvStatus"),
+                    "restingHeartRate": s.get("restingHeartRate")}
+        except Exception as e:
+            res["sleep_before_error"] = str(e)
         res["_date"] = start_local
         res["_start"] = str(meta.get("startTimeLocal") or "")
         return res
@@ -1525,12 +1539,19 @@ def analyze_activity(activity_id: str = "") -> dict:
                     if 0 <= (start_min - mmin) <= 240:
                         pre.append(m)
                 last = max(pre, key=lambda m: str(m[0])) if pre else None
+                hrs_before = None
+                if last:
+                    lmin = int(str(last[0])[:2]) * 60 + int(str(last[0])[3:5])
+                    hrs_before = round((start_min - lmin) / 60, 1)
                 r["pre_workout_fuel"] = {
                     "window": "4h before start",
                     "kcal": round(sum(m[2] for m in pre)),
                     "carbs_g": round(sum(m[4] for m in pre)),
+                    "protein_g": round(sum(m[3] for m in pre)),
+                    "fat_g": round(sum(m[5] for m in pre)),
                     "fasted": len(pre) == 0,
-                    "last_meal_before": (f"{last[0]} {last[1]}" if last else None)}
+                    "last_meal_before": (f"{last[0]} {last[1]}" if last else None),
+                    "hours_before_last_meal": hrs_before}
         except Exception:
             pass
     return r
