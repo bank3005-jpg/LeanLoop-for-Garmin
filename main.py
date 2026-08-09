@@ -599,8 +599,9 @@ def _log_training(d, acts):
                              "km": (rp.get("distance_km") or {}).get("number"),
                              "sec": _parse_dur("".join(x.get("plain_text", "") for x in dt)),
                              "gid": "".join(x.get("plain_text", "") for x in gd)})
-    except Exception:
-        return {"created": 0, "failed": 0}
+    except Exception as e:
+        # dedup state is UNKNOWN — do NOT create blindly, and do NOT report false success.
+        return {"created": 0, "failed": len(acts), "error": f"traininglog-query-failed: {str(e)[:80]}"}
 
     def _is_dup(aid, name, km):
         """PRIMARY identity = Garmin activityId (exact). Fallback for legacy rows without an id =
@@ -716,8 +717,12 @@ def _close_one(d):
         acts_ok = False  # unknown activity state — do NOT infer "no activity"
     try:
         trained = _log_training(d, acts)
-    except Exception:
-        trained = {"created": 0, "failed": 0}
+    except Exception as e:
+        trained = {"created": 0, "failed": len(acts), "error": str(e)[:120]}
+    if not acts_ok:
+        # Garmin activity fetch failed — never imply "no training happened"; flag it so the
+        # closeday result tells the truth. The existing 3-day re-close retries this naturally.
+        trained = {**trained, "activities_unknown": True}
     row = _find_row(d)
     if not row:
         return {"date": d, "status": "no-foodlog-row", "trained": trained}
@@ -1144,32 +1149,51 @@ _LIFT_HEADER = ["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "vol
 
 
 def _replace_table(bid, table_block, header=None):
-    """Replace ONLY the LeanLoop-owned table — matched by its header row when `header` is given, so a
-    user's own second table on the page is never deleted. Notes/images/callouts always kept.
-    table_block=None just removes the matching table (used when clearing all meals/lifts)."""
+    """Replace ONLY the LeanLoop-owned table (matched by its header row), NEVER a user's own table.
+    Data-safe ordering: for a REPLACE, APPEND the new table FIRST, then delete the old one(s) — so a
+    failed append never destroys existing data (old stays intact). A stale old table left by a failed
+    delete is harmless because the read-side parsers prefer the NEWEST matching table. For an explicit
+    CLEAR (table_block=None) deletion IS the operation, so a failed delete PROPAGATES (caller must not
+    report success)."""
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
     except Exception:
         kids = {"results": []}
+    owned = []
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
-        if header is not None:
-            try:
-                rr = _notion("GET", f"/blocks/{b['id'].replace('-', '')}/children?page_size=1", None, "2022-06-28")
-                fr = (rr.get("results") or [{}])[0]
-                cells = ["".join(x.get("plain_text", "") for x in c).strip()
-                         for c in (fr.get("table_row", {}).get("cells", []))]
-                if cells != header:
-                    continue  # not our table — leave it alone
-            except Exception:
-                continue  # can't verify -> don't delete (safe)
+        if header is None:
+            owned.append(b["id"]); continue
         try:
-            _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
+            rr = _notion("GET", f"/blocks/{b['id'].replace('-', '')}/children?page_size=1", None, "2022-06-28")
+            fr = (rr.get("results") or [{}])[0]
+            cells = ["".join(x.get("plain_text", "") for x in c).strip()
+                     for c in (fr.get("table_row", {}).get("cells", []))]
+            if cells == header:
+                owned.append(b["id"])  # our table
         except Exception:
-            pass
+            continue  # can't verify -> never touch it (safe)
     if table_block is not None:
+        # APPEND new first — if this raises, propagate; the old table is still intact.
         _notion_write("PATCH", f"/blocks/{bid}/children", {"children": [table_block]})
+        stale = 0
+        for tid in owned:  # only NOW remove the old copy; a failure just leaves a stale dup
+            try:
+                _notion("DELETE", f"/blocks/{tid}", None, "2022-06-28")
+            except Exception:
+                stale += 1
+        return {"stale_tables": stale} if stale else {}
+    # CLEAR: a delete failure must NOT look like success
+    err = None
+    for tid in owned:
+        try:
+            _notion("DELETE", f"/blocks/{tid}", None, "2022-06-28")
+        except Exception as e:
+            err = e
+    if err:
+        raise err
+    return {}
 
 
 def _parse_meals(page_id):
@@ -1184,6 +1208,7 @@ def _parse_meals(page_id):
     def _cells(r):
         return ["".join(x.get("plain_text", "") for x in c).strip()
                 for c in r.get("table_row", {}).get("cells", [])]
+    newest = []
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
@@ -1204,8 +1229,8 @@ def _parse_meals(page_id):
                 out.append([v[0], v[1], float(v[2]), float(v[3]), float(v[4]), float(v[5])])
             except Exception:
                 pass
-        return out
-    return []
+        newest = out  # keep scanning — a later matching table is the newer write (prefer newest)
+    return newest
 
 
 _REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
@@ -1430,6 +1455,7 @@ def _parse_lift_table(page_id):
             return float(x)
         except Exception:
             return None
+    newest = []
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
@@ -1448,8 +1474,8 @@ def _parse_lift_table(page_id):
                 continue
             sr = v[2].split("×") if "×" in v[2] else [v[2], ""]
             out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else "")])
-        return out
-    return []
+        newest = out  # prefer the newest matching lift table (append-first write may leave a stale dup)
+    return newest
 
 
 @mcp.tool()
@@ -1521,8 +1547,9 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
     if not parsed:  # lifts=[] -> explicitly clear the lift table (mirror meals=[])
         try:
             _replace_table(bid, None, header=_LIFT_HEADER)
-        except Exception:
-            pass
+        except Exception as e:
+            return {"date": d, "session": sess, "page_id": row_id,
+                    "status": "clear-failed", "error": str(e)[:120]}
         return {"date": d, "session": sess, "page_id": row_id, "status": "lifts-cleared"}
     try:
         trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
@@ -1777,12 +1804,16 @@ def analyze_activity(activity_id: str = "") -> dict:
         else:
             latest = (g.get_activities(0, 1) or [{}])[0]
             aid = str(latest.get("activityId", ""))
-            meta = latest
+            # list items omit RPE/feel — pull full detail so the bundle can reconcile them
+            meta = (g.get_activity(aid) if aid else None) or latest
         if not aid:
             return {"error": "no activity found"}
         tkey = ((meta.get("activityType") or {}).get("typeKey")) or ""
         res["session"] = {k: meta.get(k) for k in _ACT_KEEP if meta.get(k) is not None}
         res["session"]["typeKey"] = tkey
+        for _k in ("directWorkoutRpe", "directWorkoutFeel"):  # subjective — only if Garmin has it, never fabricate
+            if meta.get(_k) is not None:
+                res["session"][_k] = meta.get(_k)
         start_local = str(meta.get("startTimeLocal") or "")[:10]
         try:
             laps = (g.get_activity_splits(aid) or {}).get("lapDTOs") or []
@@ -1953,9 +1984,10 @@ def calibrate_report(days: int = 14) -> dict:
         rows = foodlog_get_range(s, e)
         if isinstance(rows, dict):
             return None, None, None
-        logged = [r for r in rows if r.get("kcal") is not None]
+        # coverage for CALIBRATION = days that actually have a usable deficit_actual (a kcal-only day
+        # with no TDEE contributes 0 to the sum, so it must not count as covered).
         defs = [r.get("deficit_actual") for r in rows if r.get("deficit_actual") is not None]
-        return round(sum(defs)), len(logged), rows
+        return round(sum(defs)), len(defs), rows
 
     # --- Preferred: InBody/body-scan fat-mass calibration (same source, latest pair) ---
     scans = _body_scans()
@@ -1974,7 +2006,10 @@ def calibrate_report(days: int = 14) -> dict:
         if prior:
             s0, s1 = prior["date"], latest["date"]
             span = max(1, (_d.fromisoformat(s1) - _d.fromisoformat(s0)).days)
-            cum, nlog, _ = _cum_deficit(s0, s1)
+            # a morning-fasted scan on s1 reflects energy balance THROUGH the day before s1
+            # (s1's own food/TDEE happens after the scan) — exclude s1 from the deficit window.
+            e_def = (_d.fromisoformat(s1) - _td(days=1)).isoformat()
+            cum, nlog, _ = _cum_deficit(s0, e_def)
             if cum is not None:
                 need = max(1, round(span * 0.8))
                 pred_fat = round(-cum / 7700, 2)
@@ -1989,7 +2024,7 @@ def calibrate_report(days: int = 14) -> dict:
                        "visceral_change": (round(latest["visceral"] - prior["visceral"], 1)
                                            if latest.get("visceral") is not None and prior.get("visceral") is not None else None),
                        "window": f"{s0}..{s1}", "span_days": span,
-                       "days_logged": nlog, "days_required": need,
+                       "days_with_deficit": nlog, "days_required": need,
                        "coverage_ok": nlog >= need,
                        "cumulative_deficit_kcal": cum,
                        "predicted_fat_loss_kg": pred_fat,
@@ -2010,7 +2045,7 @@ def calibrate_report(days: int = 14) -> dict:
         return {"error": "could not read FoodLog"}
     out = {"method": "scale weigh-ins — approximate (weight includes water/glycogen; use an InBody scan for a reliable read)",
            "window": f"{start}..{end}",
-           "days_logged": nlog, "days_required": max(1, round(days * 0.8)),
+           "days_with_deficit": nlog, "days_required": max(1, round(days * 0.8)),
            "coverage_ok": nlog >= round(days * 0.8),
            "cumulative_deficit_kcal": cum,
            "expected_weight_change_kg": round(-cum / 7700, 2)}

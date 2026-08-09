@@ -7,6 +7,7 @@ os.environ.update(dict(MCP_SECRET="t", GARMINTOKENS_B64="d", NOTION_TOKEN="d",
     PROGRESS_PAGE_ID="p", TZ_NAME="Asia/Bangkok", CONFIG_PAGE_ID="c",
     PLAYBOOK_URL="file://"+os.path.abspath("playbook.md")))
 import main
+_orig_log_training=main._log_training; _orig_replace_table=main._replace_table; _orig_call=main.call
 P=[0]; F=[]
 def ok(n,c):
     P[0]+= 1 if c else 0
@@ -157,6 +158,77 @@ def _lift_rd(m,p,pl,v):
 main._notion=_lift_rd
 ok("_parse_lift_table picks lift table by header (skips user table)", main._parse_lift_table("pg2")==[["Bench",60.0,4.0,8.0]])
 
+
+# ================= FINAL Hardening Patch regression =================
+# ---- P1-1: training logging must never fail silently ----
+def _qfail(m,p,pl,v):
+    if "query" in p: raise RuntimeError("boom")
+    return {"results":[]}
+main._log_training=_orig_log_training
+main._notion=_qfail
+_r=main._log_training("2026-08-10",[{"activityId":1,"activityName":"R","activityType":{"typeKey":"running"},"duration":1800,"distance":5000,"calories":400}])
+ok("P1-1 training query fail = truthful, not 0/0 success", _r["created"]==0 and _r["failed"]==1 and "error" in _r)
+def _okq(m,p,pl,v): return {"results":[]}
+main._notion=_okq
+ok("P1-1 genuine no-activity day still clean 0/0", main._log_training("2026-08-10",[])=={"created":0,"failed":0})
+
+# ---- P1-2: table replacement is data-safe ----
+_del=[]
+def _af_notion(m,p,pl,v):
+    if m=="DELETE": _del.append(p); return {}
+    if p.endswith("/children?page_size=100"): return {"results":[{"id":"tbl","type":"table"}]}
+    if "/children?page_size=1" in p: return {"results":[_RR(main._MEAL_HEADER)]}
+    return {"results":[]}
+def _af_write(m,p,pl): raise RuntimeError("append failed")
+main._replace_table=_orig_replace_table
+main._notion=_af_notion; main._notion_write=_af_write
+try:
+    main._replace_table("bid", {"object":"block","type":"table","table":{}}, header=main._MEAL_HEADER); _raised=False
+except Exception: _raised=True
+ok("P1-2 append-fail propagates + old table NOT deleted (data safe)", _raised and _del==[])
+
+def _newest(m,p,pl,v):
+    if p.startswith("/blocks/pg/children"): return {"results":[{"id":"tm1","type":"table"},{"id":"tm2","type":"table"}]}
+    if "/tm1/" in p: return {"results":[_RR(["เวลา","รายการ","kcal","p","c","f"]),_RR(["08:00","old",100,1,1,1])]}
+    if "/tm2/" in p: return {"results":[_RR(["เวลา","รายการ","kcal","p","c","f"]),_RR(["12:00","new",500,20,60,10])]}
+    return {"results":[]}
+main._notion=_newest
+ok("P1-2 _parse_meals prefers NEWEST matching table (stale dup safe)", main._parse_meals("pg")==[["12:00","new",500.0,20.0,60.0,10.0]])
+
+def _rt_fail(bid,tb,header=None): raise RuntimeError("delete failed")
+main._replace_table=_rt_fail
+main._notion=lambda m,p,pl,v:{"results":[]} if "query" in p else {"id":"w"}
+main._notion_write=lambda m,p,pl:{"id":"x"}
+_r=main.weightlog_upsert(page_id="x1",session="Pull",lifts=[])
+ok("P1-2 lifts=[] delete failure = NOT lifts-cleared", _r["status"]=="clear-failed" and "error" in _r)
+
+# ---- P1-3: calibration correctness ----
+main._body_scans=lambda:[]
+main.call=lambda *a,**k:{"points":[]}
+main.foodlog_get_range=lambda s,e:[{"kcal":1500,"deficit_actual":500},{"kcal":1600,"deficit_actual":400},{"kcal":1400}]
+_r=main.calibrate_report(days=14)
+ok("P1-3 coverage counts deficit-days not kcal-days", _r["days_with_deficit"]==2)
+
+_rng=[]
+def _fgr(s,e): _rng.append((s,e)); return [{"kcal":1,"deficit_actual":-500} for _ in range(14)]
+main.foodlog_get_range=_fgr
+main._body_scans=lambda:[
+  {"date":"2026-08-01","fatMass":20.0,"leanMass":55.0,"w":80.0,"source":"InBody","condition":"morning-fasted","visceral":8,"smm":30,"score":80},
+  {"date":"2026-08-15","fatMass":19.0,"leanMass":55.0,"w":79.0,"source":"InBody","condition":"morning-fasted","visceral":8,"smm":30,"score":81}]
+_r=main.calibrate_report()
+ok("P1-3 scan-pair deficit window excludes s1 (off-by-one)", _r.get("span_days")==14 and bool(_rng) and _rng[-1]==("2026-08-01","2026-08-14"))
+
+# ---- P1-4A: analyze_activity.session carries RPE/feel when present ----
+main.call=_orig_call; main._call_cache.clear()
+class _GA:
+    def get_activities(s,a,b): return [{"activityId":"77","activityType":{"typeKey":"running"},"duration":1800,"distance":5000}]
+    def get_activity(s,aid): return {"activityId":"77","activityName":"Run","activityType":{"typeKey":"running"},"duration":1800,"distance":5000,"averageHR":150,"directWorkoutRpe":70,"directWorkoutFeel":75}
+    def get_activity_splits(s,aid): return {"lapDTOs":[]}
+    def get_activity_hr_in_timezones(s,aid): return []
+    def get_activities_by_date(s,*a): return []
+main.client=lambda:_GA(); main._fit_records=lambda aid:[]
+_r=main.analyze_activity()
+ok("P1-4A analyze_activity.session carries RPE/feel when Garmin has them", _r["session"].get("directWorkoutRpe")==70 and _r["session"].get("directWorkoutFeel")==75)
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
