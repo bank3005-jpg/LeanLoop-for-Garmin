@@ -1064,6 +1064,9 @@ def _parse_meals(page_id):
     return out
 
 
+_REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery", "readiness")
+
+
 def foodlog_get(date: str = "") -> dict:
     """Read the Notion FoodLog row for a date (exact date match). Returns page_id and all fields. date=YYYY-MM-DD, default today."""
     d = day(date)
@@ -1086,6 +1089,7 @@ def foodlog_get(date: str = "") -> dict:
             "kcal": num("kcal"), "p": num("p"), "c": num("c"), "f": num("f"),
             "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
             "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
+            "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None),
             "meals": _parse_meals(row["id"])}
 
 
@@ -1127,7 +1131,8 @@ def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
                     "kcal": num("kcal"), "p": num("p"), "c": num("c"), "f": num("f"),
                     "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
                     "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
-                    "sync": (((p.get("sync") or {}).get("select")) or {}).get("name")})
+                    "sync": (((p.get("sync") or {}).get("select")) or {}).get("name"),
+                    "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None)})
     out.sort(key=lambda x: x["date"] or "")
     _cput(_ck, out, 21600 if e < _today else 30)
     _bump("foodlog_read", out)
