@@ -308,5 +308,91 @@ main._notion=_hdr_fail; main._notion_write=lambda m,p,pl:{"id":"x"}
 _r=main.weightlog_upsert(session="Pull",lifts=[])
 ok("FF2 CLEAR header-verify fail = clear-failed (ownership unknown, not lifts-cleared)", _r["status"]=="clear-failed" and "error" in _r)
 
+# ================= FINAL P1: READ UNKNOWN != EMPTY =================
+def _thr(msg):
+    def _f(m,p,pl,v): raise RuntimeError(msg)
+    return _f
+# T1 meal page-children read fail -> raise (not [])
+def _t1(m,p,pl,v):
+    if p.startswith("/blocks/pg/children"): raise RuntimeError("children down")
+    return {"results":[]}
+main._notion=_t1
+try: main._parse_meals("pg"); _r=False
+except Exception: _r=True
+ok("RP-T1 meal page-children read fail = raise (not [])", _r)
+# T2 meal table-rows read fail -> raise
+def _t2(m,p,pl,v):
+    if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tm","type":"table"}]}
+    if "/tm/" in p: raise RuntimeError("rows down")
+    return {"results":[]}
+main._notion=_t2
+try: main._parse_meals("pg"); _r=False
+except Exception: _r=True
+ok("RP-T2 meal table-rows read fail = raise (not [])", _r)
+# T3 malformed meal row -> raise (never partial list)
+def _t3(m,p,pl,v):
+    if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tm","type":"table"}]}
+    if "/tm/" in p: return {"results":[_RR(["เวลา","รายการ","kcal","p","c","f"]),_RR(["12:00","rice","BAD","20","60","10"])]}
+    return {"results":[]}
+main._notion=_t3
+try: main._parse_meals("pg"); _r=False
+except Exception: _r=True
+ok("RP-T3 malformed meal row = raise (never drops a meal)", _r)
+# T4 genuine no meal table (user table only) -> []
+def _t4(m,p,pl,v):
+    if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tu","type":"table"}]}
+    if "/tu/" in p: return {"results":[_RR(["date","mood"]),_RR(["1/1","ok"])]}
+    return {"results":[]}
+main._notion=_t4
+ok("RP-T4 verified no meal table = [] (not error)", main._parse_meals("pg")==[])
+# T5 lift page-children read fail -> raise
+def _t5(m,p,pl,v):
+    if p.startswith("/blocks/pg/children"): raise RuntimeError("down")
+    return {"results":[]}
+main._notion=_t5
+try: main._parse_lift_table("pg"); _r=False
+except Exception: _r=True
+ok("RP-T5 lift page-children read fail = raise (not [])", _r)
+# T6 lift table-rows read fail -> raise
+def _t6(m,p,pl,v):
+    if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tl","type":"table"}]}
+    if "/tl/" in p: raise RuntimeError("rows down")
+    return {"results":[]}
+main._notion=_t6
+try: main._parse_lift_table("pg"); _r=False
+except Exception: _r=True
+ok("RP-T6 lift table-rows read fail = raise (not [])", _r)
+# T7 genuine no lift table -> []
+def _t7(m,p,pl,v):
+    if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tu","type":"table"}]}
+    if "/tu/" in p: return {"results":[_RR(["date","note"]),_RR(["1/1","x"])]}
+    return {"results":[]}
+main._notion=_t7
+ok("RP-T7 verified no lift table = [] (not error)", main._parse_lift_table("pg")==[])
+# lazy lift row stays valid (not malformed)
+def _tlazy(m,p,pl,v):
+    if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tl","type":"table"}]}
+    if "/tl/" in p: return {"results":[_RR(main._LIFT_HEADER),_RR(["Deadlift","-","-","-","-"])]}
+    return {"results":[]}
+main._notion=_tlazy
+ok("RP lazy lift row ('-') stays valid, not malformed", main._parse_lift_table("pg")==[["Deadlift",None,None,None]])
+# E2E foodlog_get meal read fail -> top-level error + meals != []
+def _e2e_f(m,p,pl,v):
+    if "query" in p: return {"results":[{"id":"pg","properties":{"kcal":{"number":1}}}]}
+    if p.startswith("/blocks/pg/children"): raise RuntimeError("down")
+    return {"results":[]}
+main._notion=_e2e_f
+main._find_row=lambda d:{"id":"pg","properties":{"kcal":{"number":1}}}
+_r=main.foodlog_get("2026-08-10")
+ok("RP-E2E foodlog_get meal read fail = top-level error + meals is None", "error" in _r and _r.get("meals") is None)
+# E2E traininglog_read weights lift read fail -> error, never lifts=[]
+def _e2e_t(m,p,pl,v):
+    if "query" in p: return {"results":[{"id":"w1","properties":{"session":{"title":[{"plain_text":"Push"}]},"type":{"select":{"name":"weights"}},"date":{"date":{"start":"2026-08-10"}}}}],"has_more":False}
+    if p.startswith("/blocks/w1/children"): raise RuntimeError("down")
+    return {"results":[]}
+main._notion=_e2e_t
+_r=main.traininglog_read("2026-08-10",type="weights")
+ok("RP-E2E traininglog_read lift read fail = error (never lifts=[])", isinstance(_r,dict) and "error" in _r)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

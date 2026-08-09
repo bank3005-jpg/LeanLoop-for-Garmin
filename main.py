@@ -1207,8 +1207,8 @@ def _parse_meals(page_id):
     bid = page_id.replace("-", "")
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"meal-page-read-failed: {e}")  # UNKNOWN != empty (coach rewrites the FULL list)
     def _cells(r):
         return ["".join(x.get("plain_text", "") for x in c).strip()
                 for c in r.get("table_row", {}).get("cells", [])]
@@ -1219,21 +1219,21 @@ def _parse_meals(page_id):
         tid = b["id"].replace("-", "")
         try:
             rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
-        except Exception:
-            continue
+        except Exception as e:
+            raise RuntimeError(f"meal-table-read-failed: {e}")  # can't prove it's NOT the meal table -> fail visible
         rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
         if not rlist or _cells(rlist[0]) != _MEAL_HEADER:
             continue  # NOT the LeanLoop meal table — check the next table (never parse a user table)
         out = []
         for r in rlist[1:]:
             v = _cells(r)
-            if len(v) < 6 or v[1] == "รวม":
-                continue
+            if len(v) >= 2 and v[1] == "รวม":
+                continue  # intentional total row
             try:
                 out.append([v[0], v[1], float(v[2]), float(v[3]), float(v[4]), float(v[5])])
-            except Exception:
-                pass
-        newest = out  # keep scanning — a later matching table is the newer write (prefer newest)
+            except Exception as e:
+                raise RuntimeError(f"malformed meal row {v!r}: {e}")  # never silently drop a real meal
+        newest = out  # prefer the newest matching table
     return newest
 
 
@@ -1258,12 +1258,17 @@ def foodlog_get(date: str = "") -> dict:
         rt = (p.get(k) or {}).get("rich_text") or []
         return "".join(t.get("plain_text", "") for t in rt) or None
 
-    return {"date": d, "day": _day_title(d), "page_id": row["id"],
+    base = {"date": d, "day": _day_title(d), "page_id": row["id"],
             "kcal": num("kcal"), "p": num("p"), "c": num("c"), "f": num("f"),
             "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
             "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
-            "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None),
-            "meals": _parse_meals(row["id"])}
+            "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None)}
+    try:  # a failed meal read must NEVER look like "no meals" (would delete real meals on rewrite)
+        base["meals"] = _parse_meals(row["id"])
+    except Exception as e:
+        base["meals"] = None
+        base["error"] = f"meal-table-read-failed: {e}"
+    return base
 
 
 def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
@@ -1456,8 +1461,8 @@ def _parse_lift_table(page_id):
     bid = page_id.replace("-", "")
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"lift-page-read-failed: {e}")  # UNKNOWN != empty (blocks blind overwrite)
     def _cells(r):
         return ["".join(x.get("plain_text", "") for x in c).strip()
                 for c in r.get("table_row", {}).get("cells", [])]
@@ -1466,7 +1471,7 @@ def _parse_lift_table(page_id):
         try:
             return float(x)
         except Exception:
-            return None
+            return None  # lazy value ("-"/blank) is VALID, not malformed
     newest = []
     for b in kids.get("results", []):
         if b.get("type") != "table":
@@ -1474,16 +1479,18 @@ def _parse_lift_table(page_id):
         tid = b["id"].replace("-", "")
         try:
             rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
-        except Exception:
-            continue
+        except Exception as e:
+            raise RuntimeError(f"lift-table-read-failed: {e}")  # can't prove it's NOT the lift table
         rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
         if not rlist or _cells(rlist[0]) != _LIFT_HEADER:
             continue  # NOT the LeanLoop lift table
         out = []
         for r in rlist[1:]:
             v = _cells(r)
-            if len(v) < 4 or v[1] == "รวม volume":
-                continue
+            if len(v) >= 2 and v[1] == "รวม volume":
+                continue  # intentional total row
+            if len(v) < 4:
+                raise RuntimeError(f"malformed lift row {v!r}")  # structurally broken -> never drop a lift
             sr = v[2].split("×") if "×" in v[2] else [v[2], ""]
             out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else "")])
         newest = out  # prefer the newest matching lift table (append-first write may leave a stale dup)
@@ -1629,7 +1636,10 @@ def traininglog_read(date: str = "", end_date: str = "", type: str = "") -> list
                "kcal_burn_adjusted": num("kcal_burn_adjusted"),
                "coach_notes": txt("coach_notes"), "body_signals": txt("body_signals")}
         if sel("type") == "weights":
-            rec["lifts"] = _parse_lift_table(row["id"])
+            try:
+                rec["lifts"] = _parse_lift_table(row["id"])
+            except Exception as e:  # lift read UNKNOWN -> visible error, never a false "lifts=[]"
+                return {"error": f"lift-table-read-failed: {e}"}
         out.append(rec)
     out.sort(key=lambda x: (x["date"] or "", x["session"] or ""))
     return out
