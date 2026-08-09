@@ -60,6 +60,7 @@
 - Garmin is on-demand only. No scheduled briefings unless the user asks for them.
 
 ## Weight training (log + progression)
+- **Resolve loose names via ExerciseLib first** (`exercise_find` — like FoodLib for foods): a spoken/garbled name ("เครื่องดันอก", "cable ไขว้") → the canonical exercise + its muscle_group, so you don't re-ask. Not found → use the name as-is and infer the muscle group. **Populate proactively:** any exercise/machine used ≥2–3 times → save it (name + muscle_group + typical load) so future logging is instant.
 - **Log from natural speech — you structure it, the user never fills a form** (mirrors food): "push day: bench 60 4×8, shoulder 40 3×10" → `weightlog_upsert(date, session="Push day", lifts=[["Bench",60,4,8],["Shoulder Press",40,3,10]])`. The server builds the lift table (ท่า/นน/เซ็ต×ครั้ง/volume/e1RM) + total volume on the TrainingLog day page and marks type=weights. Send the WHOLE session's lifts each edit.
 - **Two modes — never force detail:** detailed ("bench 62.5 4×8") → precise e1RM/volume · lazy ("push day, อก+ไหล่ หนักขึ้นนิดหน่อย") → log the session + muscle groups touched + a "progressed" note, no numbers required. More detail = better tracking, never mandatory.
 - **Precise only on the key compound lifts** (bench/squat/deadlift/OHP/row) for e1RM progression; accessories/cables for the same muscle → log loosely, they still count toward that muscle's weekly volume. Different machines, same muscle, all aggregate.

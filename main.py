@@ -434,6 +434,7 @@ import urllib.request as _url
 
 FOODLOG_DS = os.environ.get("NOTION_FOODLOG_DS", "")
 TRAINING_DS = os.environ.get("NOTION_TRAININGLOG_DS", "")
+EXERCISELIB_DS = os.environ.get("NOTION_EXERCISELIB_DS", "")
 BODYMETRICS_DS = os.environ.get("NOTION_BODYMETRICS_DS", "")
 
 
@@ -1899,6 +1900,62 @@ def foodlib_find(query: str) -> list | dict:
                     "c": num("c"), "f": num("f"), "notes": txt("notes")})
     _cput(ck, out, 600)
     _bump("foodlib_find", out)
+    return out
+
+
+@mcp.tool()
+def exercise_find(query: str) -> list | dict:
+    """Search the user's ExerciseLib by exercise/machine name (contains match, max 10). Returns the
+    canonical name + muscle_group + default_load + notes, so a loose spoken name ("เครื่องดันอก")
+    resolves to a known exercise and its muscle group when logging weights. Empty list = not saved yet."""
+    ds = os.environ.get("NOTION_EXERCISELIB_DS", "")
+    if not ds:
+        return {"error": "NOTION_EXERCISELIB_DS is not set on this server — search ExerciseLib via the Notion connector instead."}
+    q = query.strip()
+    ck = ("exlib", q.lower())
+    c = _cget(ck)
+    if c is not None:
+        _bump("exercise_find", c)[2] += 1
+        return c
+
+    def _q(term):
+        flt = {"filter": {"property": "name", "title": {"contains": term}}, "page_size": 10}
+        try:
+            try:
+                return _notion("POST", f"/databases/{ds}/query", flt, "2022-06-28")
+            except Exception:
+                return _notion("POST", f"/data_sources/{ds}/query", flt, "2025-09-03")
+        except Exception:
+            return None
+    r = _q(q)
+    if r is None:
+        return {"error": "ExerciseLib query failed"}
+    if not r.get("results"):
+        for w in sorted((w for w in q.split() if len(w) >= 3), key=len, reverse=True):
+            rr = _q(w)
+            if rr and rr.get("results"):
+                r = rr
+                break
+    out = []
+    for row in r.get("results", []):
+        p = row.get("properties", {})
+
+        def num(k):
+            return (p.get(k) or {}).get("number")
+
+        def txt(k):
+            rt = (p.get(k) or {}).get("rich_text") or []
+            return "".join(t.get("plain_text", "") for t in rt) or None
+
+        def sel(k):
+            return (((p.get(k) or {}).get("select")) or {}).get("name")
+
+        title = (p.get("name") or {}).get("title") or []
+        out.append({"name": "".join(t.get("plain_text", "") for t in title),
+                    "muscle_group": sel("muscle_group"), "default_load": num("default_load"),
+                    "notes": txt("notes")})
+    _cput(ck, out, 600)
+    _bump("exercise_find", out)
     return out
 
 
