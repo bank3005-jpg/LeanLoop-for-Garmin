@@ -86,7 +86,7 @@ PN=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
 gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:${PN}-compute@developer.gserviceaccount.com" --role="roles/cloudbuild.builds.builder" --condition=None
 ```
 
-Then build the env file — **fill the three {{values}} first** (Claude: prepare this block for them with real values from Phase 2):
+Then build the env file — **fill every `{{...}}` placeholder first** (from Phase 2 / Phase 0) (Claude: prepare this block for them with real values from Phase 2):
 
 ```bash
 cd ~/garmin-mcp

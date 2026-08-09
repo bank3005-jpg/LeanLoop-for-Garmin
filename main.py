@@ -146,26 +146,27 @@ def _contains_error(obj):
     return False
 
 
-def call(fn, *args, retry=True, ckey=None):
+def call(fn, *args, retry=True, ckey=None, cacheable=None, max_list=40):
     global _garmin
     import sys
     import time as _t
     tool = sys._getframe(1).f_code.co_name
     key = (tool, ckey if ckey is not None else args)  # ckey = explicit key when args are hidden in a closure
-    cacheable = tool.startswith("get_")
+    if cacheable is None:
+        cacheable = tool.startswith("get_")
     if cacheable:
         hit = _cget(key)
         if hit is not None:
             _bump(tool, hit)[2] += 1
             return hit
     try:
-        r = _tabulate(slim(fn(client())(*args)))
+        r = _tabulate(slim(fn(client())(*args), max_list))
     except Exception as e:
         if not retry:
             return {"error": str(e)}  # non-idempotent write — never blind-retry (avoid duplicates)
         _garmin = None  # token likely expired in-session: retry once with fresh login
         try:
-            r = _tabulate(slim(fn(client())(*args)))
+            r = _tabulate(slim(fn(client())(*args), max_list))
         except Exception as e2:
             return {"error": str(e2)}
     if cacheable and not _contains_error(r):
@@ -267,7 +268,7 @@ def _act_slim(acts):
 
 def _activities_recent(limit: int = 10) -> list | dict:
     """Recent activities (runs, rides, workouts...). Returns key fields per activity."""
-    return call(lambda g: lambda: _act_slim(g.get_activities(0, min(limit, 50))))
+    return call(lambda g: lambda: _act_slim(g.get_activities(0, min(limit, 50))), ckey=(limit,), cacheable=True, max_list=60)
 
 
 def get_body_composition(date: str = "") -> dict:
@@ -282,7 +283,7 @@ def get_activity_details(activity_id: str) -> dict:
 
 def get_activity_splits(activity_id: str) -> dict:
     """Per-lap/km splits of one activity: pace, HR, cadence per split."""
-    return call(lambda g: g.get_activity_splits, activity_id)
+    return call(lambda g: g.get_activity_splits, activity_id, max_list=100)
 
 
 def get_activity_hr_zones(activity_id: str) -> list | dict:
@@ -292,7 +293,7 @@ def get_activity_hr_zones(activity_id: str) -> list | dict:
 
 def get_activities_range(start_date: str, end_date: str = "", activity_type: str = "") -> list | dict:
     """Activities between two dates (YYYY-MM-DD). Optional activity_type: running, cycling, swimming, fitness_equipment..."""
-    return call(lambda g: lambda: _act_slim(g.get_activities_by_date(start_date, end_date or None, activity_type or None)), ckey=(start_date, end_date, activity_type))
+    return call(lambda g: lambda: _act_slim(g.get_activities_by_date(start_date, end_date or None, activity_type or None)), ckey=(start_date, end_date, activity_type), max_list=200)
 
 
 def get_race_predictions() -> dict:
@@ -328,7 +329,7 @@ def get_personal_records() -> list | dict:
 @mcp.tool()
 def get_weight_history(start_date: str, end_date: str = "") -> dict:
     """Weigh-in history between dates (YYYY-MM-DD)."""
-    return call(lambda g: lambda: g.get_weigh_ins(start_date, end_date or day("")), ckey=(start_date, end_date))
+    return call(lambda g: lambda: g.get_weigh_ins(start_date, end_date or day("")), ckey=(start_date, end_date), max_list=200)
 
 
 def get_hydration(date: str = "") -> dict:

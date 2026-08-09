@@ -5,7 +5,7 @@ os.environ.update(dict(MCP_SECRET="t", GARMINTOKENS_B64="d", NOTION_TOKEN="d",
     NOTION_FOODLOG_DS="fl", NOTION_TRAININGLOG_DS="tl", NOTION_BODYMETRICS_DS="bm",
     NOTION_EXERCISELIB_DS="ex", D1_DATE="2026-03-15", TDEE_BASELINE="2620",
     PROGRESS_PAGE_ID="p", TZ_NAME="Asia/Bangkok", CONFIG_PAGE_ID="c",
-    PLAYBOOK_URL="file:///tmp/integ/playbook.md"))
+    PLAYBOOK_URL="file://"+os.path.abspath("playbook.md")))
 import main
 P=[0]; F=[]
 def ok(n,c):
@@ -107,6 +107,47 @@ ok("weightlog None = table untouched", main.weightlog_upsert(session="P",lifts=N
 _seen.clear()
 ok("weightlog [] = cleared with lift header", main.weightlog_upsert(session="P",lifts=[])["status"]=="lifts-cleared" and _seen==[("clear",main._LIFT_HEADER)])
 ok("body_battery_change (not body_battery) in REC_KEYS", "body_battery_change" in main._REC_KEYS and "body_battery" not in main._REC_KEYS)
+
+
+# ---- round-3: read-side table ownership + backward-safe ----
+def _RR(cells): return {"type":"table_row","table_row":{"cells":[[{"plain_text":str(c)}] for c in cells]}}
+def _rd_mock(m,p,pl,v):
+    if p.startswith("/blocks/pg/children"): return {"results":[{"id":"tu","type":"table"},{"id":"tm","type":"table"}]}
+    if "/tu/" in p: return {"results":[_RR(["date","mood"]),_RR(["1/1","ok"])]}
+    if "/tm/" in p: return {"results":[_RR(["เวลา","รายการ","kcal","p","c","f"]),_RR(["12:00","rice",500,20,60,10])]}
+    return {"results":[]}
+main._notion=_rd_mock
+ok("_parse_meals picks meal table by header (skips user table)", main._parse_meals("pg")==[["12:00","rice",500.0,20.0,60.0,10.0]])
+main._notion=lambda m,p,pl,v: {"results":[{"id":"tu","type":"table"}]} if p.startswith("/blocks/pg/children") else ({"results":[_RR(["date","mood"])]} if "/tu/" in p else {"results":[]})
+ok("_parse_meals returns [] when only a user table exists", main._parse_meals("pg")==[])
+# backward-safe: _log_training retries create without garmin_activity_id
+_c=[]
+def _bt(m,p,pl,v):
+    if "query" in p: return {"results":[]}
+    if p=="/pages":
+        if "garmin_activity_id" in pl.get("properties",{}): raise RuntimeError("400 unknown property")
+        _c.append(1); return {"id":"x"}
+    return {"results":[]}
+main._notion=_bt
+ok("training create falls back without garmin_activity_id (old schema)", main._log_training("2026-08-10",[{"activityId":9,"activityName":"R","activityType":{"typeKey":"running"},"duration":1800,"distance":5000,"calories":400}])["created"]==1)
+# backward-safe: close-day writes core even if recovery columns missing
+_w=[]
+def _bw(m,p,pl):
+    pr=pl.get("properties",{})
+    if any(k in pr for k in ("sleep_score","readiness","hrv")): raise RuntimeError("400 unknown property")
+    _w.append([k for k in ("tdee_est","sync") if k in pr]); return {"id":"x"}
+main._notion=lambda m,p,pl,v:{"results":[{"id":"pg","properties":{"kcal":{"number":2000}}}]} if "query" in p else {"results":[]}
+main._notion_write=_bw
+main._find_row=lambda d:{"id":"pg","properties":{"kcal":{"number":2000}}}
+main._log_training=lambda d,a:{"created":0,"failed":0}
+class _C:
+    def get_activities_by_date(s,a,b): return []
+    def get_stats(s,d): return {"totalKilocalories":2800}
+    def get_sleep_data(s,d): return {"dailySleepDTO":{"sleepScores":{"overall":{"value":70}},"sleepTimeSeconds":25000},"avgOvernightHrv":50,"restingHeartRate":48,"bodyBatteryChange":60}
+    def get_training_readiness(s,d): return [{"score":75}]
+main.client=lambda:_C()
+_r=main._close_one("2026-08-09")
+ok("close-day writes core TDEE/sync even if recovery cols missing", _r["status"]=="updated" and _w==[["tdee_est","sync"]])
 
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
