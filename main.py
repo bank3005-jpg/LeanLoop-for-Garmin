@@ -1356,8 +1356,8 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         parsed = [_lift(l) for l in data]
     except Exception:
         return {"error": "lifts must be [[exercise, load_kg?, sets?, reps?], ...] (numbers optional = lazy)"}
-    if not parsed:
-        return {"error": "no lifts provided"}
+    if not parsed and not session:
+        return {"error": "give a session name and/or lifts"}
     if not TRAINING_DS:
         return {"error": "NOTION_TRAININGLOG_DS not set"}
 
@@ -1398,6 +1398,8 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         return c
     def _rowb(vals, bold=False):
         return {"type": "table_row", "table_row": {"cells": [_cell(v, bold) for v in vals]}}
+    if not parsed:
+        return {"date": d, "session": sess, "page_id": row_id, "status": "session-logged-no-lifts"}
     bid = (row_id or "").replace("-", "")
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
