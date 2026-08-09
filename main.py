@@ -653,17 +653,23 @@ def _log_training(d, acts):
             props["training_effect_aerobic"] = {"number": round(a["aerobicTrainingEffect"], 1)}
         if a.get("anaerobicTrainingEffect") is not None:
             props["training_effect_anaerobic"] = {"number": round(a["anaerobicTrainingEffect"], 1)}
-        try:
+        def _create(p):
             try:
                 _notion("POST", "/pages",
-                        {"parent": {"database_id": TRAINING_DS}, "properties": props}, "2022-06-28")
+                        {"parent": {"database_id": TRAINING_DS}, "properties": p}, "2022-06-28")
             except Exception:
                 _notion("POST", "/pages",
                         {"parent": {"type": "data_source_id", "data_source_id": TRAINING_DS},
-                         "properties": props}, "2025-09-03")
+                         "properties": p}, "2025-09-03")
+        try:
+            _create(props)
             made += 1
         except Exception:
-            failed += 1
+            try:  # old schema without garmin_activity_id -> retry without it (dedup falls back to name+distance)
+                _create({k: v for k, v in props.items() if k != "garmin_activity_id"})
+                made += 1
+            except Exception:
+                failed += 1
     return {"created": made, "failed": failed}
 
 
@@ -753,13 +759,21 @@ def _close_one(d):
             new_props["exercise_burn"] = {"number": round(burn)}
     # recovery: same pattern as exercise_type/burn above — add only if this day's row
     # doesn't already carry it (keeps the nightly 3-day re-close from refetching).
-    if any((props.get(k) or {}).get("number") is None for k in ("sleep_score", "readiness")):
-        new_props.update(_recovery_props(d))
-    if not new_props:
+    rec = _recovery_props(d) if any((props.get(k) or {}).get("number") is None
+                                    for k in ("sleep_score", "readiness")) else {}
+    if not new_props and not rec:
         return {"date": d, "status": "already-synced", "tdee": tdee, "trained": trained}
-    _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
+    try:
+        _notion_write("PATCH", "/pages/" + row["id"], {"properties": {**new_props, **rec}})
+        wrote = list(new_props) + list(rec)
+    except Exception:
+        # old schema without recovery columns -> NEVER let recovery block the core TDEE/sync write
+        wrote = []
+        if new_props:
+            _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
+            wrote = list(new_props)
     return {"date": d, "status": "updated", "tdee": tdee, "tag": tag,
-            "wrote": list(new_props), "trained": trained}
+            "wrote": wrote, "trained": trained}
 
 
 def _update_progress(page_id):
@@ -1166,7 +1180,9 @@ def _parse_meals(page_id):
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
     except Exception:
         return []
-    out = []
+    def _cells(r):
+        return ["".join(x.get("plain_text", "") for x in c).strip()
+                for c in r.get("table_row", {}).get("cells", [])]
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
@@ -1174,24 +1190,21 @@ def _parse_meals(page_id):
         try:
             rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
         except Exception:
-            return []
-        for r in rows.get("results", []):
-            if r.get("type") != "table_row":
-                continue
-            cells = r.get("table_row", {}).get("cells", [])
-
-            def _t(cell):
-                return "".join(x.get("plain_text", "") for x in cell).strip()
-
-            v = [_t(c) for c in cells]
-            if len(v) < 6 or v[0] == "เวลา" or v[1] == "รวม":
+            continue
+        rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
+        if not rlist or _cells(rlist[0]) != _MEAL_HEADER:
+            continue  # NOT the LeanLoop meal table — check the next table (never parse a user table)
+        out = []
+        for r in rlist[1:]:
+            v = _cells(r)
+            if len(v) < 6 or v[1] == "รวม":
                 continue
             try:
                 out.append([v[0], v[1], float(v[2]), float(v[3]), float(v[4]), float(v[5])])
             except Exception:
                 pass
-        break
-    return out
+        return out
+    return []
 
 
 _REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
@@ -1407,7 +1420,15 @@ def _parse_lift_table(page_id):
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
     except Exception:
         return []
-    out = []
+    def _cells(r):
+        return ["".join(x.get("plain_text", "") for x in c).strip()
+                for c in r.get("table_row", {}).get("cells", [])]
+
+    def _n(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
@@ -1415,22 +1436,19 @@ def _parse_lift_table(page_id):
         try:
             rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
         except Exception:
-            return []
-        for r in rows.get("results", []):
-            if r.get("type") != "table_row":
-                continue
-            v = ["".join(x.get("plain_text", "") for x in c).strip() for c in r.get("table_row", {}).get("cells", [])]
-            if len(v) < 4 or v[0] in ("ท่า", "") or v[1] == "รวม volume":
+            continue
+        rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
+        if not rlist or _cells(rlist[0]) != _LIFT_HEADER:
+            continue  # NOT the LeanLoop lift table
+        out = []
+        for r in rlist[1:]:
+            v = _cells(r)
+            if len(v) < 4 or v[1] == "รวม volume":
                 continue
             sr = v[2].split("×") if "×" in v[2] else [v[2], ""]
-            def _n(x):
-                try:
-                    return float(x)
-                except Exception:
-                    return None
             out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else "")])
-        break
-    return out
+        return out
+    return []
 
 
 @mcp.tool()
