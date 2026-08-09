@@ -1798,22 +1798,37 @@ def analyze_activity(activity_id: str = "") -> dict:
 
     def f(g):
         res = {}
+        # `meta` must stay the FLAT activity-list shape the whole analysis reads (typeKey/duration/
+        # startTimeLocal/averageHR...). `get_activity()` is NESTED (summaryDTO/activityTypeDTO), so it is
+        # used ONLY as `detail` to enrich subjective RPE/feel — never as canonical metadata.
         if activity_id:
-            meta = g.get_activity(activity_id) or {}
             aid = activity_id
+            detail = g.get_activity(aid) or {}
+            _sd = detail.get("summaryDTO") or {}
+            _day = str(detail.get("startTimeLocal") or _sd.get("startTimeLocal") or "")[:10]
+            meta = None
+            if _day:  # recover the flat list item for this activity
+                for _a in (g.get_activities_by_date(_day, _day) or []):
+                    if str(_a.get("activityId")) == str(aid):
+                        meta = _a; break
+            meta = meta or detail  # fallback: partial detail beats nothing
         else:
             latest = (g.get_activities(0, 1) or [{}])[0]
             aid = str(latest.get("activityId", ""))
-            # list items omit RPE/feel — pull full detail so the bundle can reconcile them
-            meta = (g.get_activity(aid) if aid else None) or latest
+            meta = latest  # known-good flat metadata — do NOT swap for full detail
+            detail = (g.get_activity(aid) if aid else None) or {}
         if not aid:
             return {"error": "no activity found"}
         tkey = ((meta.get("activityType") or {}).get("typeKey")) or ""
         res["session"] = {k: meta.get(k) for k in _ACT_KEEP if meta.get(k) is not None}
         res["session"]["typeKey"] = tkey
-        for _k in ("directWorkoutRpe", "directWorkoutFeel"):  # subjective — only if Garmin has it, never fabricate
-            if meta.get(_k) is not None:
-                res["session"][_k] = meta.get(_k)
+        _sum = detail.get("summaryDTO") or {}
+        for _k in ("directWorkoutRpe", "directWorkoutFeel"):  # subjective — tolerant of nesting, only if present, never fabricated
+            _v = detail.get(_k)
+            if _v is None:
+                _v = _sum.get(_k)
+            if _v is not None:
+                res["session"][_k] = _v
         start_local = str(meta.get("startTimeLocal") or "")[:10]
         try:
             laps = (g.get_activity_splits(aid) or {}).get("lapDTOs") or []

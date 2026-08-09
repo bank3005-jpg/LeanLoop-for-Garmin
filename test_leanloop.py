@@ -230,5 +230,20 @@ main.client=lambda:_GA(); main._fit_records=lambda aid:[]
 _r=main.analyze_activity()
 ok("P1-4A analyze_activity.session carries RPE/feel when Garmin has them", _r["session"].get("directWorkoutRpe")==70 and _r["session"].get("directWorkoutFeel")==75)
 
+# release-blocker: get_activity() is NESTED — flat list item stays canonical meta, detail only enriches RPE/feel
+main.call=_orig_call; main._call_cache.clear()
+class _GN:
+    def get_activities(s,a,b): return [{"activityId":77,"activityName":"Run","activityType":{"typeKey":"running"},"startTimeLocal":"2026-08-10T07:00:00","duration":1800,"distance":5000,"averageHR":150}]
+    def get_activity(s,aid): return {"activityId":77,"activityName":"Run","activityTypeDTO":{"typeKey":"running"},"summaryDTO":{"startTimeLocal":"2026-08-10T07:00:00","duration":1800,"distance":5000,"averageHR":150,"directWorkoutRpe":70,"directWorkoutFeel":75}}
+    def get_activity_splits(s,aid): return {"lapDTOs":[]}
+    def get_activity_hr_in_timezones(s,aid): return []
+    def get_activities_by_date(s,*a): return []
+main.client=lambda:_GN(); main._fit_records=lambda aid:[]
+_ss=main.analyze_activity()["session"]
+ok("blocker: nested get_activity -> flat meta preserved + RPE/feel from summaryDTO",
+   _ss.get("activityId")==77 and _ss.get("distance")==5000 and _ss.get("duration")==1800
+   and _ss.get("averageHR")==150 and _ss.get("typeKey")=="running"
+   and _ss.get("directWorkoutRpe")==70 and _ss.get("directWorkoutFeel")==75)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
