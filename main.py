@@ -1905,7 +1905,7 @@ def foodlib_find(query: str) -> list | dict:
 _playbook_cache = {"text": "", "ts": 0.0}
 
 
-_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "weight training", "coach me today", "progress check", "coaching brain")
+_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "weight training", "training plan", "coach me today", "progress check", "coaching brain")
 
 
 def _pb_fetch():
