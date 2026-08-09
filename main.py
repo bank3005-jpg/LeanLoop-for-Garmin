@@ -1929,7 +1929,7 @@ def _pb_fetch():
 
 @mcp.tool()
 def get_playbook(section: str = "") -> str:
-    """The latest coaching rules. Call once (no args) at the start of any food/training/coaching conversation: returns the core rules plus a list of on-demand sections. The moment an on-demand topic comes up, call again with section="<name>" to get those rules."""
+    """The latest coaching rules. Call once (no args) at the start of any food/training/coaching conversation: returns the core rules plus a list of on-demand sections. The moment on-demand topics come up, call again with section="<name>" (or several at once: section="post-workout, coaching brain") to get those rules in one call."""
     text = _pb_fetch()
     if "\n## " not in text:
         return text
@@ -1939,11 +1939,17 @@ def get_playbook(section: str = "") -> str:
         h, _, b = pt.partition("\n")
         secs.append((h.strip(), b))
     if section:
-        q = section.lower()
-        for h, b in secs:
-            if q in h.lower():
-                return f"## {h}\n{b}"
-        return "Section not found. Available: " + " | ".join(h for h, _ in secs)
+        # accept ONE or MANY sections (comma-separated) in a single call — fewer round-trips
+        wanted = [x.strip().lower() for x in section.split(",") if x.strip()]
+        out = []
+        for w in wanted:
+            for h, b in secs:
+                if w in h.lower():
+                    out.append(f"## {h}\n{b}")
+                    break
+        if out:
+            return "\n\n".join(out)
+        return "Section(s) not found. Available: " + " | ".join(h for h, _ in secs)
     core = [head]
     skipped = []
     for h, b in secs:
