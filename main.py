@@ -146,12 +146,12 @@ def _contains_error(obj):
     return False
 
 
-def call(fn, *args, retry=True):
+def call(fn, *args, retry=True, ckey=None):
     global _garmin
     import sys
     import time as _t
     tool = sys._getframe(1).f_code.co_name
-    key = (tool, args)
+    key = (tool, ckey if ckey is not None else args)  # ckey = explicit key when args are hidden in a closure
     cacheable = tool.startswith("get_")
     if cacheable:
         hit = _cget(key)
@@ -292,7 +292,7 @@ def get_activity_hr_zones(activity_id: str) -> list | dict:
 
 def get_activities_range(start_date: str, end_date: str = "", activity_type: str = "") -> list | dict:
     """Activities between two dates (YYYY-MM-DD). Optional activity_type: running, cycling, swimming, fitness_equipment..."""
-    return call(lambda g: lambda: _act_slim(g.get_activities_by_date(start_date, end_date or None, activity_type or None)))
+    return call(lambda g: lambda: _act_slim(g.get_activities_by_date(start_date, end_date or None, activity_type or None)), ckey=(start_date, end_date, activity_type))
 
 
 def get_race_predictions() -> dict:
@@ -328,7 +328,7 @@ def get_personal_records() -> list | dict:
 @mcp.tool()
 def get_weight_history(start_date: str, end_date: str = "") -> dict:
     """Weigh-in history between dates (YYYY-MM-DD)."""
-    return call(lambda g: lambda: g.get_weigh_ins(start_date, end_date or day("")))
+    return call(lambda g: lambda: g.get_weigh_ins(start_date, end_date or day("")), ckey=(start_date, end_date))
 
 
 def get_hydration(date: str = "") -> dict:
@@ -338,7 +338,7 @@ def get_hydration(date: str = "") -> dict:
 
 def get_blood_pressure(start_date: str = "", end_date: str = "") -> dict:
     """Blood pressure readings between dates (if logged in Garmin Connect)."""
-    return call(lambda g: lambda: g.get_blood_pressure(start_date or day(""), end_date or None))
+    return call(lambda g: lambda: g.get_blood_pressure(start_date or day(""), end_date or None), ckey=(start_date, end_date))
 
 
 def get_intensity_minutes(date: str = "") -> dict:
@@ -1069,11 +1069,11 @@ def get_activity_pacing(activity_id: str) -> dict:
     """Walk/pause detection + pacing fade from the FIT file: true running pace (walks excluded), walk seconds per km, first-vs-second-half fade."""
     def f():
         return _pacing_calc(_fit_records(activity_id))
-    return call(lambda g: lambda: f())
+    return call(lambda g: lambda: f(), ckey=("pacing", activity_id))
 
 
 def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,cadence",
-                        max_points: int = 60) -> dict:
+                        max_points: int = 40) -> dict:
     """Downsampled second-by-second sensor streams from an activity's FIT file. metrics: comma list from heart_rate,speed,cadence,power,altitude,distance. Returns ~max_points averaged buckets."""
     def f():
         recs = _fit_records(activity_id)
@@ -1081,7 +1081,7 @@ def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,caden
             return {"error": "no record data in FIT file"}
         want = [m.strip() for m in metrics.split(",") if m.strip()]
         t0 = recs[0]["timestamp"]
-        n = max(1, len(recs) // max(1, min(max_points, 200)))
+        n = max(1, -(-len(recs) // min(max(max_points, 1), 40)))  # ceil -> <=40 buckets (slim-safe)
         points = []
         for i in range(0, len(recs), n):
             chunk = recs[i:i + n]
@@ -1093,14 +1093,14 @@ def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,caden
             points.append(pt)
         return {"activity_id": str(activity_id), "raw_records": len(recs),
                 "points": points}
-    return call(lambda g: lambda: f())
+    return call(lambda g: lambda: f(), ckey=(activity_id, metrics, max_points))
 
 
 def get_aerobic_decoupling(activity_id: str, skip_warmup_min: float = 5.0) -> dict:
     """Aerobic decoupling (Pa:Hr drift) for a steady activity: compares speed/HR efficiency of first vs second half. <5% = strong aerobic base. Use on steady runs/rides, not intervals."""
     def f():
         return _decoupling_calc(_fit_records(activity_id), skip_warmup_min)
-    return call(lambda g: lambda: f())
+    return call(lambda g: lambda: f(), ckey=("decoupling", activity_id, skip_warmup_min))
 
 
 # ---- FoodLog direct tools (exact date query — no fuzzy search) --------------
