@@ -1158,7 +1158,9 @@ def _replace_table(bid, table_block, header=None):
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
     except Exception:
-        kids = {"results": []}
+        if table_block is None:
+            raise  # CLEAR: unknown table state must fail closed — never report a false "cleared"
+        kids = {"results": []}  # REPLACE stays data-safe (new table is appended first)
     owned = []
     for b in kids.get("results", []):
         if b.get("type") != "table":
@@ -1414,7 +1416,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             res = {"date": d, "status": "updated", "page_id": row["id"],
                    "wrote": _note(row["id"], list(props))}
             if note_err[0]:
-                res["meal_note_error"] = note_err[0]
+                if meals is not None:  # meal-TABLE write/clear failed — must be unmistakable, never a silent success
+                    res["status"] = "partial-failure"
+                    res["error"] = f"meal-table-write-failed: {note_err[0]}"
+                else:
+                    res["meal_note_error"] = note_err[0]
             return res
         title = _day_title(d)
         full_props = {"day": {"title": [{"text": {"content": title}}]},
@@ -1431,7 +1437,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         res = {"date": d, "status": "created", "page_id": r.get("id"), "day": title,
                "wrote": _note(r.get("id"), list(props))}
         if note_err[0]:
-            res["meal_note_error"] = note_err[0]
+            if meals is not None:  # meal-TABLE write/clear failed — must be unmistakable, never a silent success
+                res["status"] = "partial-failure"
+                res["error"] = f"meal-table-write-failed: {note_err[0]}"
+            else:
+                res["meal_note_error"] = note_err[0]
         return res
     except Exception as e:
         return {"error": str(e)}

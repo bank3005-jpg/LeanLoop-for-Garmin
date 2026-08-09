@@ -245,5 +245,56 @@ ok("blocker: nested get_activity -> flat meta preserved + RPE/feel from summaryD
    and _ss.get("averageHR")==150 and _ss.get("typeKey")=="running"
    and _ss.get("directWorkoutRpe")==70 and _ss.get("directWorkoutFeel")==75)
 
+# ================= FINAL FINAL: table CLEAR truthfulness =================
+# Test 1 — Food CLEAR discovery failure -> NOT a false success
+main._replace_table=_orig_replace_table
+def _clr_fail(m,p,pl,v):
+    if "query" in p: return {"results":[{"id":"pg","properties":{"kcal":{"number":1}}}]}
+    if m=="GET" and "/children" in p: raise RuntimeError("children read down")
+    return {"results":[]}
+main._notion=_clr_fail; main._notion_write=lambda m,p,pl:{"id":"x"}
+main._find_row=lambda d:{"id":"pg","properties":{"kcal":{"number":1}}}
+_r=main.foodlog_upsert(meals=[])
+ok("FF food CLEAR discovery-fail = top-level error, not cleared", "error" in _r and _r.get("status")=="partial-failure")
+
+# Test 2 — Weight CLEAR discovery failure -> clear-failed (never lifts-cleared)
+main._replace_table=_orig_replace_table
+def _wclr_fail(m,p,pl,v):
+    if "query" in p: return {"results":[]}
+    if m=="GET" and "/children" in p: raise RuntimeError("children down")
+    if p=="/pages": return {"id":"w1"}
+    return {"results":[]}
+main._notion=_wclr_fail; main._notion_write=lambda m,p,pl:{"id":"x"}
+_r=main.weightlog_upsert(session="Pull",lifts=[])
+ok("FF weight CLEAR discovery-fail = clear-failed (not lifts-cleared)", _r["status"]=="clear-failed" and "error" in _r)
+
+# Test 3 — Meal table rebuild (append) fails -> top-level error
+main._replace_table=_orig_replace_table
+def _rebuild_ok_get(m,p,pl,v):
+    if "query" in p: return {"results":[{"id":"pg","properties":{"kcal":{"number":1}}}]}
+    if m=="GET" and "/children" in p: return {"results":[]}
+    return {"results":[]}
+def _rebuild_fail_write(m,p,pl):
+    if "/children" in p: raise RuntimeError("append failed")
+    return {"id":"x"}
+main._notion=_rebuild_ok_get; main._notion_write=_rebuild_fail_write
+main._find_row=lambda d:{"id":"pg","properties":{"kcal":{"number":1}}}
+_r=main.foodlog_upsert(meals=[["12:00","rice",500,20,60,10]])
+ok("FF meal-table rebuild fail = top-level error (not silent updated)", "error" in _r and _r.get("status")=="partial-failure")
+
+# Test 4 — Normal CLEAR still works (verified owned table deleted)
+main._replace_table=_orig_replace_table
+_deleted=[]
+def _clr_ok(m,p,pl,v):
+    if "query" in p: return {"results":[]}
+    if m=="GET" and p.endswith("/children?page_size=100"): return {"results":[{"id":"tl","type":"table"}]}
+    if m=="GET" and "?page_size=1" in p: return {"results":[_RR(main._LIFT_HEADER)]}
+    if m=="DELETE": _deleted.append(p); return {}
+    if p=="/pages": return {"id":"w1"}
+    return {"results":[]}
+main._notion=_clr_ok; main._notion_write=lambda m,p,pl:{"id":"x"}
+_r=main.weightlog_upsert(session="Pull",lifts=[])
+ok("FF normal CLEAR still works (verified table deleted)", _r["status"]=="lifts-cleared" and len(_deleted)==1)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
