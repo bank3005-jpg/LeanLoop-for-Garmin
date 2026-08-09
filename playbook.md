@@ -44,7 +44,8 @@
   - Exactly **6 columns in this order**: `เวลา | รายการ | kcal | p | c | f` (bold header row).
   - One row per meal, **sorted by time 00:00→23:59** (same order the server stores).
   - A **bold total row** labelled `รวม` with the day's kcal/p/c/f (use the saved totals the server recomputed — never re-add by hand).
-  - Then a **Target** row (ranges from Config).
+  - A **`Target` row — MANDATORY** (kcal/macro ranges from Config for TODAY's phase; carb-up days use the carb-up target, taper/maintenance uses maintenance). If Config targets aren't loaded, call `get_config` BEFORE showing the table — never drop the Target row to save a step.
+  - **The table is WRONG and incomplete if the `D[N] | YYYY-MM-DD` title OR the `Target` row is missing — include BOTH every single time, even late in a long chat. If unsure, re-read this Display rule and rebuild the table fully.**
   - If a save fails, say so and retry — never present an unsaved table as if it were logged.
 - Never put exercise rows inside the food table. Below it, one line: `Est. TDEE: [X] ([activity] +[burn]) | Current deficit: [Y]` (real values are written by the nightly cron).
 - **Alerts:** >4h meal gap → protein reminder · >80g protein remaining after 18:00 → warn · kcal < BMR two days running → warn · fat <40g three days running → hormone warning.
@@ -60,6 +61,7 @@
 ## Daily calorie target (deficit-based, NOT a fixed number)
 - The target is a **consistent deficit off the day's real TDEE**, not a fixed intake. Rest day → the base intake range in Config. **Training day → the day's TDEE is higher, so eat MORE**: add back a portion of the exercise burn (Config's eat-back %) to keep the deficit inside the target range. Never leave the fixed rest-day number on a high-burn day — that creates a huge deficit and under-fuels training (poor recovery, muscle loss, the metabolic-adaptation spiral).
 - Two guardrails from Config, always: never exceed the **max daily deficit** (bigger = under-fuelling → tell them to eat more), and never eat below the **kcal floor**.
+- **Taper / race week (Config PHASE `stop_deficit` date reached):** target switches to **MAINTENANCE — eat to the day's TDEE, deficit ≈ 0** (glycogen must be topped up, not drained). **Proactively flag** when intake is running well under estimated TDEE (baseline + today's burn) — a big deficit here drains glycogen and the athlete feels flat / no energy. Keep carbs high; do NOT let a deficit sneak back until the post-race return date in Config. This is a priority the moment PHASE says taper.
 - **Where the extra calories go on a training day:** mostly to **carbs** (the training fuel — on big days carbs may exceed the normal heavy tier); **protein stays fixed** (set by bodyweight, not by the day's burn); **fat stays in its Config range** — don't let fat balloon just to fill calories.
 - Intraday TDEE can overestimate, so only eat back a fraction (Config's %); calibration tightens this over time. Example: burn day TDEE ~3800, deficit target ~500 → eat ~3300, not the rest-day 2200.
 
