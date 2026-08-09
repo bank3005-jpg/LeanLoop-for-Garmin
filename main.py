@@ -1236,6 +1236,89 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         return {"error": str(e)}
 
 
+@mcp.tool()
+def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None) -> dict:
+    """Log a weight-training session as a clean lift table on its TrainingLog day page.
+    Creates/updates ONE TrainingLog row (type=weights) for the date + session name, then rebuilds
+    the lift table from `lifts` = array of ["exercise", load_kg, sets, reps] (a JSON string is also
+    accepted). The server computes volume (load*sets*reps) and estimated 1RM per lift plus total
+    volume, so send the WHOLE session's lifts on every add/edit. date=YYYY-MM-DD, default today."""
+    d = day(date)
+    sess = (session or "Weights").strip()
+    try:
+        import json as _j
+        data = _j.loads(lifts) if isinstance(lifts, str) else (lifts or [])
+        parsed = [[str(l[0]), float(l[1]), int(l[2]), int(l[3])] for l in data]
+    except Exception:
+        return {"error": "lifts must be [[exercise, load_kg, sets, reps], ...]"}
+    if not parsed:
+        return {"error": "no lifts provided"}
+    if not TRAINING_DS:
+        return {"error": "NOTION_TRAININGLOG_DS not set"}
+
+    row_id = None
+    flt = {"filter": {"and": [{"property": "date", "date": {"equals": d}},
+                             {"property": "type", "select": {"equals": "weights"}}]}, "page_size": 50}
+    try:
+        try:
+            r = _notion("POST", f"/databases/{TRAINING_DS}/query", flt, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{TRAINING_DS}/query", flt, "2025-09-03")
+        for row in r.get("results", []):
+            ti = "".join(x.get("plain_text", "") for x in ((row.get("properties", {}).get("session") or {}).get("title") or []))
+            if sess.lower() in ti.lower() or ti.lower() in sess.lower():
+                row_id = row["id"]
+                break
+    except Exception as e:
+        return {"error": f"query failed: {e}"}
+
+    total_vol = round(sum(l[1] * l[2] * l[3] for l in parsed))
+    props = {"session": {"title": [{"text": {"content": sess[:200]}}]},
+             "date": {"date": {"start": d}}, "type": {"select": {"name": "weights"}}}
+    if not row_id:
+        try:
+            try:
+                cr = _notion("POST", "/pages", {"parent": {"database_id": TRAINING_DS}, "properties": props}, "2022-06-28")
+            except Exception:
+                cr = _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": TRAINING_DS}, "properties": props}, "2025-09-03")
+            row_id = cr.get("id")
+        except Exception as e:
+            return {"error": f"create failed: {e}"}
+
+    def _cell(v, bold=False):
+        c = [{"type": "text", "text": {"content": str(v)[:200]}}]
+        if bold:
+            c[0]["annotations"] = {"bold": True}
+        return c
+    def _rowb(vals, bold=False):
+        return {"type": "table_row", "table_row": {"cells": [_cell(v, bold) for v in vals]}}
+    bid = (row_id or "").replace("-", "")
+    try:
+        kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
+        for b in kids.get("results", []):
+            try:
+                _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
+            except Exception:
+                pass
+        trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
+        for ex, load, sets, reps in parsed:
+            e1 = round(load * (1 + reps / 30.0), 1)
+            e1 = int(e1) if e1 == int(e1) else e1
+            ld = int(load) if load == int(load) else load
+            trows.append(_rowb([ex, ld, f"{sets}×{reps}", round(load * sets * reps), e1]))
+        trows.append(_rowb(["", "รวม volume", "", total_vol, ""], bold=True))
+        _notion_write("PATCH", f"/blocks/{bid}/children",
+                      {"children": [{"object": "block", "type": "table",
+                                     "table": {"table_width": 5, "has_column_header": True,
+                                               "has_row_header": False, "children": trows}}]})
+    except Exception as e:
+        return {"date": d, "session": sess, "page_id": row_id, "status": "row-ok-table-failed",
+                "total_volume": total_vol, "error": str(e)}
+    return {"date": d, "session": sess, "page_id": row_id, "status": "saved",
+            "lifts": len(parsed), "total_volume": total_vol}
+
+
+
 _WELLNESS = {"hrv": get_hrv, "stress": get_stress, "body_battery": get_body_battery,
              "heart_rate": get_heart_rate, "spo2": get_spo2, "respiration": get_respiration,
              "intensity_minutes": get_intensity_minutes, "hydration": get_hydration,
@@ -1758,7 +1841,7 @@ def foodlib_find(query: str) -> list | dict:
 _playbook_cache = {"text": "", "ts": 0.0}
 
 
-_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "coach me today", "progress check", "coaching brain")
+_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "weight training", "coach me today", "progress check", "coaching brain")
 
 
 def _pb_fetch():
