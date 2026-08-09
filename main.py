@@ -597,6 +597,37 @@ def _log_training(d, acts):
     return made
 
 
+def _recovery_props(d):
+    """A day's recovery metrics from Garmin as Notion number props (non-None only).
+    Sleep for day D = the night ending the morning of D. Pure data-gather, no writes."""
+    out = {}
+    try:
+        s = client().get_sleep_data(d) or {}
+        dto = s.get("dailySleepDTO") or {}
+        secs = dto.get("sleepTimeSeconds")
+        for k, v in {
+            "sleep_score": ((dto.get("sleepScores") or {}).get("overall") or {}).get("value"),
+            "sleep_hrs": round(secs / 3600, 1) if secs else None,
+            "hrv": s.get("avgOvernightHrv"),
+            "rhr": s.get("restingHeartRate"),
+            "body_battery": s.get("bodyBatteryChange"),
+        }.items():
+            if v is not None:
+                out[k] = {"number": v}
+    except Exception:
+        pass
+    try:
+        tr = client().get_training_readiness(d)
+        if isinstance(tr, list) and tr:
+            tr = tr[0]
+        if isinstance(tr, dict) and tr.get("score") is not None:
+            out["readiness"] = {"number": tr["score"]}
+    except Exception:
+        pass
+    return out
+
+
+
 def _close_one(d):
     # Auto-log workouts to TrainingLog FIRST — independent of whether food was
     # logged that day (a training day with no food row must still get its rows).
@@ -648,6 +679,10 @@ def _close_one(d):
             new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(names)[:200]}}]}
         if (props.get("exercise_burn") or {}).get("number") in (None, 0):
             new_props["exercise_burn"] = {"number": round(burn)}
+    # recovery: same pattern as exercise_type/burn above — add only if this day's row
+    # doesn't already carry it (keeps the nightly 3-day re-close from refetching).
+    if (props.get("sleep_score") or {}).get("number") is None:
+        new_props.update(_recovery_props(d))
     if not new_props:
         return {"date": d, "status": "already-synced", "tdee": tdee, "trained": trained}
     _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
