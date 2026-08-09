@@ -516,6 +516,29 @@ def _tl_type(a):
     return "weights"
 
 
+_TE_LABEL_MAP = (
+    ("RECOVERY", "recovery-run"), ("AEROBIC_BASE", "run"), ("BASE", "run"),
+    ("TEMPO", "tempo"), ("THRESHOLD", "threshold"), ("VO2MAX", "vo2max"),
+    ("ANAEROBIC", "interval"), ("SPRINT", "interval"),
+)
+
+
+def _run_subtype(aid):
+    """Garmin's own trainingEffectLabel -> run subtype for the TrainingLog `type` select.
+    Tolerant: returns None on ANY failure so _log_training always falls back to the basic
+    type and the row is still created. Uses Garmin's classification, not a home-made one."""
+    try:
+        det = client().get_activity(str(aid)) or {}
+        lbl = (((det.get("summaryDTO") or {}).get("trainingEffectLabel")) or "").upper()
+        for key, val in _TE_LABEL_MAP:
+            if key in lbl:
+                return val
+    except Exception:
+        pass
+    return None
+
+
+
 def _log_training(d, acts):
     """Cron auto-creates a bare TrainingLog row per Garmin activity (idempotent by
     date+session title). Coach enriches coach_notes/body_signals later in chat."""
@@ -565,7 +588,8 @@ def _log_training(d, acts):
         props = {
             "session": {"title": [{"text": {"content": name[:200]}}]},
             "date": {"date": {"start": d}},
-            "type": {"select": {"name": _tl_type(a)}},
+            "type": {"select": {"name": (_run_subtype(a.get("activityId")) or _tl_type(a))
+                                          if _tl_type(a) == "run" else _tl_type(a)}},
             "kcal_burn_app": {"number": round(cals)},
             "kcal_burn_adjusted": {"number": round(cals * (0.90 if tkey in _CARDIO else 0.85))},
         }
