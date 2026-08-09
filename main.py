@@ -136,7 +136,17 @@ def _bump(tool, result):
     return u
 
 
-def call(fn, *args):
+def _contains_error(obj):
+    """True if a dict/list contains an 'error' key anywhere (so partial-failure composite results
+    like get_coach_snapshot with out['sleep']={'error':...} are NOT cached as if successful)."""
+    if isinstance(obj, dict):
+        return "error" in obj or any(_contains_error(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_error(v) for v in obj)
+    return False
+
+
+def call(fn, *args, retry=True):
     global _garmin
     import sys
     import time as _t
@@ -150,13 +160,15 @@ def call(fn, *args):
             return hit
     try:
         r = _tabulate(slim(fn(client())(*args)))
-    except Exception:
-        _garmin = None  # token likely expired in-session: retry with fresh login
+    except Exception as e:
+        if not retry:
+            return {"error": str(e)}  # non-idempotent write — never blind-retry (avoid duplicates)
+        _garmin = None  # token likely expired in-session: retry once with fresh login
         try:
             r = _tabulate(slim(fn(client())(*args)))
-        except Exception as e:
-            return {"error": str(e)}
-    if cacheable and not (isinstance(r, dict) and "error" in r):
+        except Exception as e2:
+            return {"error": str(e2)}
+    if cacheable and not _contains_error(r):
         _cput(key, r, 600)
     _bump(tool, r)
     return r
@@ -368,7 +380,7 @@ def add_body_composition(
             bmi=bmi,
         )
         return {"status": "saved", "response": r}
-    return call(lambda g: lambda: f(g))
+    return call(lambda g: lambda: f(g), retry=False)
 
 
 @mcp.tool()
@@ -451,6 +463,27 @@ def _notion(method, path, payload, version):
     )
     with _url.urlopen(req, timeout=30) as r:
         return _json.loads(r.read())
+
+
+def _notion_query_all(ds, filt=None):
+    """Query a Notion db/data_source following pagination — for places that need COMPLETE history
+    (avoids silent truncation at 100 as history grows). Returns the flat list of result rows."""
+    out, cursor = [], None
+    while True:
+        payload = {"page_size": 100}
+        if filt:
+            payload["filter"] = filt
+        if cursor:
+            payload["start_cursor"] = cursor
+        try:
+            r = _notion("POST", f"/databases/{ds}/query", payload, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{ds}/query", payload, "2025-09-03")
+        out.extend(r.get("results", []))
+        if not r.get("has_more"):
+            break
+        cursor = r.get("next_cursor")
+    return out
 
 
 def _find_row(d):
@@ -1164,14 +1197,11 @@ def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
         {"property": "date", "date": {"on_or_before": e}},
     ]}, "page_size": 100}
     try:
-        try:
-            r = _notion("POST", f"/databases/{FOODLOG_DS}/query", flt, "2022-06-28")
-        except Exception:
-            r = _notion("POST", f"/data_sources/{FOODLOG_DS}/query", flt, "2025-09-03")
+        rows = _notion_query_all(FOODLOG_DS, flt.get("filter"))
     except Exception as ex:
         return {"error": str(ex)}
     out = []
-    for row in r.get("results", []):
+    for row in rows:
         p = row.get("properties", {})
 
         def num(k):
@@ -1467,14 +1497,11 @@ def traininglog_read(date: str = "", end_date: str = "", type: str = "") -> list
     if type:
         flt["filter"]["and"].append({"property": "type", "select": {"equals": type}})
     try:
-        try:
-            r = _notion("POST", f"/databases/{TRAINING_DS}/query", flt, "2022-06-28")
-        except Exception:
-            r = _notion("POST", f"/data_sources/{TRAINING_DS}/query", flt, "2025-09-03")
+        rows = _notion_query_all(TRAINING_DS, flt.get("filter"))
     except Exception as ex:
         return {"error": str(ex)}
     out = []
-    for row in r.get("results", []):
+    for row in rows:
         p = row.get("properties", {})
 
         def num(k):
@@ -1829,14 +1856,11 @@ def _body_scans():
     if not BODYMETRICS_DS:
         return []
     try:
-        try:
-            r = _notion("POST", f"/databases/{BODYMETRICS_DS}/query", {"page_size": 100}, "2022-06-28")
-        except Exception:
-            r = _notion("POST", f"/data_sources/{BODYMETRICS_DS}/query", {"page_size": 100}, "2025-09-03")
+        rows = _notion_query_all(BODYMETRICS_DS)
     except Exception:
         return []
     out = []
-    for row in r.get("results", []):
+    for row in rows:
         p = row.get("properties", {})
 
         def num(k):
@@ -2139,7 +2163,9 @@ def get_playbook(section: str = "") -> str:
 
 
 # ---- HTTP wiring -----------------------------------------------------------
-SECRET = os.environ.get("MCP_SECRET", "dev")
+SECRET = os.environ.get("MCP_SECRET")
+if not SECRET:
+    raise RuntimeError("MCP_SECRET must be set — refusing to start with a default secret")
 
 import contextlib
 
