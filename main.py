@@ -184,7 +184,7 @@ _SLEEP_NOISE = (
 
 
 def get_sleep(date: str = "", full: bool = False) -> dict:
-    """Sleep for a night: score, duration, deep/light/REM/awake, HRV during sleep, resting HR, body battery change. date=YYYY-MM-DD, default today (i.e. last night). full=true returns raw time-series too."""
+    """Sleep for a night: score, duration, deep/light/REM/awake, HRV during sleep, resting HR, body battery change. date=YYYY-MM-DD, default today (i.e. last night). full=true returns the expanded response (very large time-series arrays may still be compacted by the payload-safety layer)."""
     r = call(lambda g: g.get_sleep_data, day(date))
     if not full and isinstance(r, dict):
         r = {k: v for k, v in r.items() if k not in _SLEEP_NOISE}
@@ -218,7 +218,7 @@ _DS_KEYS = ("calendarDate", "totalKilocalories", "activeKilocalories", "bmrKiloc
 
 @mcp.tool()
 def get_daily_summary(date: str = "", full: bool = False) -> dict:
-    """Daily wellness summary: steps, calories, distance, intensity minutes, heart rate, stress, body battery. Compact by default; full=true returns every raw field."""
+    """Daily wellness summary: steps, calories, distance, intensity minutes, heart rate, stress, body battery. Compact by default; full=true returns the expanded fields (very large arrays may still be compacted for payload safety)."""
     r = call(lambda g: g.get_stats, day(date))
     if full or not isinstance(r, dict):
         return r
@@ -1611,7 +1611,7 @@ _FITNESS_NODATE = {"race_predictions": get_race_predictions,
 
 @mcp.tool()
 def get_wellness(metric: str, date: str = "", full: bool = False) -> dict | list:
-    """One daily health metric. metric = sleep (last night: score/stages/HRV/RHR/body battery; full=true adds raw series) | hrv | stress | body_battery | heart_rate | spo2 | respiration | intensity_minutes | hydration | blood_pressure | body_composition | training_readiness | training_status. date=YYYY-MM-DD, default today."""
+    """One daily health metric. metric = sleep (last night: score/stages/HRV/RHR/body battery; full=true adds the expanded series (very large arrays may still be compacted)) | hrv | stress | body_battery | heart_rate | spo2 | respiration | intensity_minutes | hydration | blood_pressure | body_composition | training_readiness | training_status. date=YYYY-MM-DD, default today."""
     m = metric.strip().lower()
     if m == "sleep":
         return get_sleep(date, full)

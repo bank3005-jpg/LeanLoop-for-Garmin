@@ -149,6 +149,14 @@ main.client=lambda:_C()
 _r=main._close_one("2026-08-09")
 ok("close-day writes core TDEE/sync even if recovery cols missing", _r["status"]=="updated" and _w==[["tdee_est","sync"]])
 
+def _lift_rd(m,p,pl,v):
+    if p.startswith("/blocks/pg2/children"): return {"results":[{"id":"tu","type":"table"},{"id":"tl","type":"table"}]}
+    if "/tu/" in p: return {"results":[_RR(["date","note"]),_RR(["1/1","x"])]}
+    if "/tl/" in p: return {"results":[_RR(["ท่า","นน(kg)","เซ็ต×ครั้ง","volume","e1RM"]),_RR(["Bench","60","4×8","1920","76"])]}
+    return {"results":[]}
+main._notion=_lift_rd
+ok("_parse_lift_table picks lift table by header (skips user table)", main._parse_lift_table("pg2")==[["Bench",60.0,4.0,8.0]])
+
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
