@@ -1301,8 +1301,43 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         return {"error": str(e)}
 
 
+def _parse_lift_table(page_id):
+    """Read the lift table already on a TrainingLog page -> [[exercise, load, sets, reps], ...]."""
+    if not page_id:
+        return []
+    bid = page_id.replace("-", "")
+    try:
+        kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
+    except Exception:
+        return []
+    out = []
+    for b in kids.get("results", []):
+        if b.get("type") != "table":
+            continue
+        tid = b["id"].replace("-", "")
+        try:
+            rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
+        except Exception:
+            return []
+        for r in rows.get("results", []):
+            if r.get("type") != "table_row":
+                continue
+            v = ["".join(x.get("plain_text", "") for x in c).strip() for c in r.get("table_row", {}).get("cells", [])]
+            if len(v) < 4 or v[0] in ("ท่า", "") or v[1] == "รวม volume":
+                continue
+            sr = v[2].split("×") if "×" in v[2] else [v[2], ""]
+            def _n(x):
+                try:
+                    return float(x)
+                except Exception:
+                    return None
+            out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else "")])
+        break
+    return out
+
+
 @mcp.tool()
-def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None) -> dict:
+def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
     """Log a weight-training session as a clean lift table on its TrainingLog day page.
     Creates/updates ONE TrainingLog row (type=weights) for the date + session name, then rebuilds
     the lift table from `lifts` = array of ["exercise", load_kg, sets, reps] (a JSON string is also
@@ -1310,34 +1345,40 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
     volume, so send the WHOLE session's lifts on every add/edit. date=YYYY-MM-DD, default today."""
     d = day(date)
     sess = (session or "Weights").strip()
+    def _lift(l):
+        l = list(l) + [None] * (4 - len(l))
+        def _n(x):
+            return None if x in (None, "") else float(x)
+        return [str(l[0]), _n(l[1]), _n(l[2]), _n(l[3])]  # load/sets/reps optional = lazy mode
     try:
         import json as _j
         data = _j.loads(lifts) if isinstance(lifts, str) else (lifts or [])
-        parsed = [[str(l[0]), float(l[1]), int(l[2]), int(l[3])] for l in data]
+        parsed = [_lift(l) for l in data]
     except Exception:
-        return {"error": "lifts must be [[exercise, load_kg, sets, reps], ...]"}
+        return {"error": "lifts must be [[exercise, load_kg?, sets?, reps?], ...] (numbers optional = lazy)"}
     if not parsed:
         return {"error": "no lifts provided"}
     if not TRAINING_DS:
         return {"error": "NOTION_TRAININGLOG_DS not set"}
 
-    row_id = None
-    flt = {"filter": {"and": [{"property": "date", "date": {"equals": d}},
-                             {"property": "type", "select": {"equals": "weights"}}]}, "page_size": 50}
-    try:
+    row_id = page_id or None  # explicit page_id (from traininglog_read) = precise edit, no guessing
+    if not row_id:
+        flt = {"filter": {"and": [{"property": "date", "date": {"equals": d}},
+                                 {"property": "type", "select": {"equals": "weights"}}]}, "page_size": 50}
         try:
-            r = _notion("POST", f"/databases/{TRAINING_DS}/query", flt, "2022-06-28")
-        except Exception:
-            r = _notion("POST", f"/data_sources/{TRAINING_DS}/query", flt, "2025-09-03")
-        for row in r.get("results", []):
-            ti = "".join(x.get("plain_text", "") for x in ((row.get("properties", {}).get("session") or {}).get("title") or []))
-            if sess.lower() in ti.lower() or ti.lower() in sess.lower():
-                row_id = row["id"]
-                break
-    except Exception as e:
-        return {"error": f"query failed: {e}"}
+            try:
+                r = _notion("POST", f"/databases/{TRAINING_DS}/query", flt, "2022-06-28")
+            except Exception:
+                r = _notion("POST", f"/data_sources/{TRAINING_DS}/query", flt, "2025-09-03")
+            for row in r.get("results", []):
+                ti = "".join(x.get("plain_text", "") for x in ((row.get("properties", {}).get("session") or {}).get("title") or []))
+                if ti.strip().lower() == sess.lower():  # EXACT match — never clobber a different session
+                    row_id = row["id"]
+                    break
+        except Exception as e:
+            return {"error": f"query failed: {e}"}
 
-    total_vol = round(sum(l[1] * l[2] * l[3] for l in parsed))
+    total_vol = round(sum(l[1] * l[2] * l[3] for l in parsed if l[1] is not None and l[2] and l[3]))
     props = {"session": {"title": [{"text": {"content": sess[:200]}}]},
              "date": {"date": {"start": d}}, "type": {"select": {"name": "weights"}}}
     if not row_id:
@@ -1367,10 +1408,13 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
                 pass
         trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
         for ex, load, sets, reps in parsed:
-            e1 = round(load * (1 + reps / 30.0), 1)
-            e1 = int(e1) if e1 == int(e1) else e1
-            ld = int(load) if load == int(load) else load
-            trows.append(_rowb([ex, ld, f"{sets}×{reps}", round(load * sets * reps), e1]))
+            if load is not None and sets and reps:
+                e1 = round(load * (1 + reps / 30.0), 1)
+                e1 = int(e1) if e1 == int(e1) else e1
+                ld = int(load) if load == int(load) else load
+                trows.append(_rowb([ex, ld, f"{int(sets)}×{int(reps)}", round(load * sets * reps), e1]))
+            else:  # lazy row — logged without numbers
+                trows.append(_rowb([ex, "-", "-", "-", "-"]))
         trows.append(_rowb(["", "รวม volume", "", total_vol, ""], bold=True))
         _notion_write("PATCH", f"/blocks/{bid}/children",
                       {"children": [{"object": "block", "type": "table",
@@ -1382,6 +1426,59 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
     return {"date": d, "session": sess, "page_id": row_id, "status": "saved",
             "lifts": len(parsed), "total_volume": total_vol}
 
+
+
+@mcp.tool()
+def traininglog_read(date: str = "", end_date: str = "", type: str = "") -> list | dict:
+    """Read TrainingLog rows (what was actually DONE) — the read side missing until now. One date (default today)
+    or a range (end_date, inclusive). Optional `type` filter (run/tempo/threshold/interval/recovery-run/weights/
+    muay-thai/...). Each row returns session/type/distance_km/duration/pace/avg_hr/max_hr/zone4_5_pct/training_effect/
+    kcal_burn/coach_notes/body_signals, and for WEIGHT sessions the lift table on its page (`lifts`: [exercise,load,
+    sets,reps]) + `page_id`. Read this BEFORE editing a weight session (so no lift is lost — resend the full list or
+    pass page_id), and for strength progression, weekly volume-per-muscle, plan adherence, and any full training review."""
+    d = day(date)
+    e = day(end_date) if end_date else d
+    if not TRAINING_DS:
+        return {"error": "NOTION_TRAININGLOG_DS not set"}
+    flt = {"filter": {"and": [{"property": "date", "date": {"on_or_after": d}},
+                             {"property": "date", "date": {"on_or_before": e}}]}, "page_size": 100}
+    if type:
+        flt["filter"]["and"].append({"property": "type", "select": {"equals": type}})
+    try:
+        try:
+            r = _notion("POST", f"/databases/{TRAINING_DS}/query", flt, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{TRAINING_DS}/query", flt, "2025-09-03")
+    except Exception as ex:
+        return {"error": str(ex)}
+    out = []
+    for row in r.get("results", []):
+        p = row.get("properties", {})
+
+        def num(k):
+            return (p.get(k) or {}).get("number")
+
+        def txt(k):
+            rt = (p.get(k) or {}).get("rich_text") or []
+            return "".join(t.get("plain_text", "") for t in rt) or None
+
+        def sel(k):
+            return (((p.get(k) or {}).get("select")) or {}).get("name")
+
+        ttl = (p.get("session") or {}).get("title") or []
+        rec = {"page_id": row["id"],
+               "date": ((p.get("date") or {}).get("date") or {}).get("start"),
+               "session": "".join(t.get("plain_text", "") for t in ttl) or None,
+               "type": sel("type"), "distance_km": num("distance_km"), "duration": txt("duration"),
+               "pace": txt("pace"), "avg_hr": num("avg_hr"), "max_hr": num("max_hr"),
+               "zone4_5_pct": num("zone4_5_pct"), "training_effect_aerobic": num("training_effect_aerobic"),
+               "kcal_burn_adjusted": num("kcal_burn_adjusted"),
+               "coach_notes": txt("coach_notes"), "body_signals": txt("body_signals")}
+        if sel("type") == "weights":
+            rec["lifts"] = _parse_lift_table(row["id"])
+        out.append(rec)
+    out.sort(key=lambda x: (x["date"] or "", x["session"] or ""))
+    return out
 
 
 _WELLNESS = {"hrv": get_hrv, "stress": get_stress, "body_battery": get_body_battery,
@@ -1962,7 +2059,7 @@ def exercise_find(query: str) -> list | dict:
 _playbook_cache = {"text": "", "ts": 0.0}
 
 
-_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "weight training", "training plan", "coach me today", "progress check", "coaching brain")
+_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "weight training", "training plan", "personal baselines", "coach me today", "progress check", "coaching brain")
 
 
 def _pb_fetch():
