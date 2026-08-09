@@ -907,6 +907,30 @@ def _fit_records(activity_id: str) -> list:
     return recs
 
 
+def _moving_time_split(rows, max_gap=10.0):
+    """Index that splits rows at HALF of moving time (sum of dt between samples, capping pause gaps)
+    instead of half the sample count — robust to pauses / Smart Recording where samples are not
+    uniformly spaced. Pure/testable. Falls back to the midpoint if timestamps are unusable."""
+    if len(rows) < 3:
+        return len(rows) // 2
+    dts = [0.0]
+    for i in range(1, len(rows)):
+        try:
+            dt = (rows[i]["timestamp"] - rows[i - 1]["timestamp"]).total_seconds()
+        except Exception:
+            dt = 0.0
+        dts.append(min(dt, max_gap) if dt > 0 else 0.0)
+    total = sum(dts)
+    if total <= 0:
+        return len(rows) // 2
+    acc, half = 0.0, total / 2
+    for i in range(1, len(rows)):
+        acc += dts[i]
+        if acc >= half:
+            return max(1, i)
+    return len(rows) // 2
+
+
 def _decoupling_calc(recs: list, skip_warmup_min: float = 5.0) -> dict:
     """Pure calculation so it can be unit-tested. recs: dicts with timestamp/heart_rate/speed."""
     moving = [r for r in recs
@@ -918,7 +942,7 @@ def _decoupling_calc(recs: list, skip_warmup_min: float = 5.0) -> dict:
             if (r["timestamp"] - t0).total_seconds() >= skip_warmup_min * 60]
     if len(work) < 120:
         work = moving
-    mid = len(work) // 2
+    mid = _moving_time_split(work)
     h1, h2 = work[:mid], work[mid:]
 
     def _avg(rows, key):
@@ -1008,7 +1032,7 @@ def _pacing_calc(recs: list) -> dict:
     runrows = [r for r in rows if _cls(r) == "run" and r.get("speed")]
     fade = None
     if len(runrows) >= 120:
-        mid = len(runrows) // 2
+        mid = _moving_time_split(runrows)
         s1 = sum(r["speed"] for r in runrows[:mid]) / mid
         s2 = sum(r["speed"] for r in runrows[mid:]) / (len(runrows) - mid)
         if s1:
