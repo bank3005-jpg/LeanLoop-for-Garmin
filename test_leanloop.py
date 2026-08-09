@@ -296,5 +296,17 @@ main._notion=_clr_ok; main._notion_write=lambda m,p,pl:{"id":"x"}
 _r=main.weightlog_upsert(session="Pull",lifts=[])
 ok("FF normal CLEAR still works (verified table deleted)", _r["status"]=="lifts-cleared" and len(_deleted)==1)
 
+# LAST verification fix: CLEAR header-verify failure must fail closed
+main._replace_table=_orig_replace_table
+def _hdr_fail(m,p,pl,v):
+    if "query" in p: return {"results":[]}
+    if m=="GET" and p.endswith("/children?page_size=100"): return {"results":[{"id":"tl","type":"table"}]}
+    if m=="GET" and "?page_size=1" in p: raise RuntimeError("header read down")
+    if p=="/pages": return {"id":"w1"}
+    return {"results":[]}
+main._notion=_hdr_fail; main._notion_write=lambda m,p,pl:{"id":"x"}
+_r=main.weightlog_upsert(session="Pull",lifts=[])
+ok("FF2 CLEAR header-verify fail = clear-failed (ownership unknown, not lifts-cleared)", _r["status"]=="clear-failed" and "error" in _r)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

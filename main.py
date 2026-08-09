@@ -1175,7 +1175,9 @@ def _replace_table(bid, table_block, header=None):
             if cells == header:
                 owned.append(b["id"])  # our table
         except Exception:
-            continue  # can't verify -> never touch it (safe)
+            if table_block is None:
+                raise  # CLEAR: ownership UNKNOWN must fail closed — never a false "cleared"
+            continue  # REPLACE: can't verify -> never touch it (safe, new table appended first)
     if table_block is not None:
         # APPEND new first — if this raises, propagate; the old table is still intact.
         _notion_write("PATCH", f"/blocks/{bid}/children", {"children": [table_block]})
