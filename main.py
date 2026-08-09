@@ -680,7 +680,7 @@ def _recovery_props(d):
             "sleep_hrs": round(secs / 3600, 1) if secs else None,
             "hrv": s.get("avgOvernightHrv"),
             "rhr": s.get("restingHeartRate"),
-            "body_battery": s.get("bodyBatteryChange"),
+            "body_battery_change": s.get("bodyBatteryChange"),
         }.items():
             if v is not None:
                 out[k] = {"number": v}
@@ -753,7 +753,7 @@ def _close_one(d):
             new_props["exercise_burn"] = {"number": round(burn)}
     # recovery: same pattern as exercise_type/burn above — add only if this day's row
     # doesn't already carry it (keeps the nightly 3-day re-close from refetching).
-    if (props.get("sleep_score") or {}).get("number") is None:
+    if any((props.get(k) or {}).get("number") is None for k in ("sleep_score", "readiness")):
         new_props.update(_recovery_props(d))
     if not new_props:
         return {"date": d, "status": "already-synced", "tdee": tdee, "trained": trained}
@@ -825,7 +825,8 @@ async def health(request):
     except Exception as e:
         checks["notion_foodlog"] = f"FAIL: {str(e)[:150]}"
     for dsname, dsid in (("notion_foodlib", os.environ.get("NOTION_FOODLIB_DS", "")),
-                         ("notion_traininglog", os.environ.get("NOTION_TRAININGLOG_DS", ""))):
+                         ("notion_traininglog", os.environ.get("NOTION_TRAININGLOG_DS", "")),
+                         ("notion_exerciselib", os.environ.get("NOTION_EXERCISELIB_DS", ""))):
         if not dsid:
             checks[dsname] = "not-set"
             continue
@@ -1123,20 +1124,35 @@ def _notion_write(method, path, payload):
         return _notion(method, path, payload, "2025-09-03")
 
 
-def _replace_table(bid, table_block):
-    """Replace ONLY the LeanLoop-owned table on a page: delete existing table blocks, then append
-    the new one. User-added notes/images/callouts/paragraphs are left untouched (fixes destroying
-    unrelated content). table_block=None just removes the table (used when clearing all meals)."""
+_MEAL_HEADER = ["เวลา", "รายการ", "kcal", "p", "c", "f"]
+_LIFT_HEADER = ["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"]
+
+
+def _replace_table(bid, table_block, header=None):
+    """Replace ONLY the LeanLoop-owned table — matched by its header row when `header` is given, so a
+    user's own second table on the page is never deleted. Notes/images/callouts always kept.
+    table_block=None just removes the matching table (used when clearing all meals/lifts)."""
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
     except Exception:
         kids = {"results": []}
     for b in kids.get("results", []):
-        if b.get("type") == "table":  # ONLY tables — never touch other content
+        if b.get("type") != "table":
+            continue
+        if header is not None:
             try:
-                _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
+                rr = _notion("GET", f"/blocks/{b['id'].replace('-', '')}/children?page_size=1", None, "2022-06-28")
+                fr = (rr.get("results") or [{}])[0]
+                cells = ["".join(x.get("plain_text", "") for x in c).strip()
+                         for c in (fr.get("table_row", {}).get("cells", []))]
+                if cells != header:
+                    continue  # not our table — leave it alone
             except Exception:
-                pass
+                continue  # can't verify -> don't delete (safe)
+        try:
+            _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
+        except Exception:
+            pass
     if table_block is not None:
         _notion_write("PATCH", f"/blocks/{bid}/children", {"children": [table_block]})
 
@@ -1178,7 +1194,7 @@ def _parse_meals(page_id):
     return out
 
 
-_REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery", "readiness")
+_REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
 
 
 def foodlog_get(date: str = "") -> dict:
@@ -1332,9 +1348,9 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                     trows.append(_row(["", "รวม", tot[0], tot[1], tot[2], tot[3]], bold=True))
                     _replace_table(bid, {"object": "block", "type": "table",
                                          "table": {"table_width": 6, "has_column_header": True,
-                                                   "has_row_header": False, "children": trows}})
-                else:  # empty list = all meals removed -> remove the table only
-                    _replace_table(bid, None)
+                                                   "has_row_header": False, "children": trows}}, header=_MEAL_HEADER)
+                else:  # empty list = all meals removed -> remove the meal table only
+                    _replace_table(bid, None, header=_MEAL_HEADER)
                 wrote.append("meals")
             except Exception as e:
                 note_err[0] = str(e)
@@ -1431,6 +1447,7 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         def _n(x):
             return None if x in (None, "") else float(x)
         return [str(l[0]), _n(l[1]), _n(l[2]), _n(l[3])]  # load/sets/reps optional = lazy mode
+    lifts_given = lifts is not None
     try:
         import json as _j
         data = _j.loads(lifts) if isinstance(lifts, str) else (lifts or [])
@@ -1479,9 +1496,15 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         return c
     def _rowb(vals, bold=False):
         return {"type": "table_row", "table_row": {"cells": [_cell(v, bold) for v in vals]}}
-    if not parsed:
-        return {"date": d, "session": sess, "page_id": row_id, "status": "session-logged-no-lifts"}
     bid = (row_id or "").replace("-", "")
+    if not lifts_given:  # lifts=None -> leave the existing lift table untouched
+        return {"date": d, "session": sess, "page_id": row_id, "status": "session-row (lifts unchanged)"}
+    if not parsed:  # lifts=[] -> explicitly clear the lift table (mirror meals=[])
+        try:
+            _replace_table(bid, None, header=_LIFT_HEADER)
+        except Exception:
+            pass
+        return {"date": d, "session": sess, "page_id": row_id, "status": "lifts-cleared"}
     try:
         trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
         for ex, load, sets, reps in parsed:
@@ -1495,7 +1518,7 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         trows.append(_rowb(["", "รวม volume", "", total_vol, ""], bold=True))
         _replace_table(bid, {"object": "block", "type": "table",
                              "table": {"table_width": 5, "has_column_header": True,
-                                       "has_row_header": False, "children": trows}})
+                                       "has_row_header": False, "children": trows}}, header=_LIFT_HEADER)
     except Exception as e:
         return {"date": d, "session": sess, "page_id": row_id, "status": "row-ok-table-failed",
                 "total_volume": total_vol, "error": str(e)}
