@@ -1052,6 +1052,24 @@ def _notion_write(method, path, payload):
         return _notion(method, path, payload, "2025-09-03")
 
 
+def _replace_table(bid, table_block):
+    """Replace ONLY the LeanLoop-owned table on a page: delete existing table blocks, then append
+    the new one. User-added notes/images/callouts/paragraphs are left untouched (fixes destroying
+    unrelated content). table_block=None just removes the table (used when clearing all meals)."""
+    try:
+        kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
+    except Exception:
+        kids = {"results": []}
+    for b in kids.get("results", []):
+        if b.get("type") == "table":  # ONLY tables — never touch other content
+            try:
+                _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
+            except Exception:
+                pass
+    if table_block is not None:
+        _notion_write("PATCH", f"/blocks/{bid}/children", {"children": [table_block]})
+
+
 def _parse_meals(page_id):
     """Read the meal table already on a FoodLog day page → list of [time, item, kcal, p, c, f]."""
     if not page_id:
@@ -1177,7 +1195,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
     date=YYYY-MM-DD, default today."""
     d = day(date)
     parsed_meals = None
-    if meals:
+    if meals is not None:
         try:
             import json as _j
             data = _j.loads(meals) if isinstance(meals, str) else meals
@@ -1208,7 +1226,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             props[k] = {"number": v}
     if exercise_type is not None:
         props["exercise_type"] = {"rich_text": [{"text": {"content": exercise_type[:200]}}]}
-    if not props and not meal_note and not meals:
+    if not props and not meal_note and meals is None:
         return {"error": "no fields provided"}
     for _k in [k for k in list(_call_cache) if isinstance(k, tuple) and k and k[0] == "foodlog"]:
         _call_cache.pop(_k, None)
@@ -1233,13 +1251,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             note_err[0] = "meals parse failed (expect JSON [[time,item,kcal,p,c,f],...])"
         if parsed_meals is not None:
             try:
-                kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
-                for b in kids.get("results", []):
-                    try:
-                        _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
-                    except Exception:
-                        pass
-                if parsed_meals:  # empty list = all meals removed → leave page blank
+                if parsed_meals:
                     rows = [[m[0], m[1], round(m[2]), round(m[3], 1), round(m[4], 1), round(m[5], 1)]
                             for m in parsed_meals]
                     tot = [round(sum(r[i] for r in rows), 1) for i in (2, 3, 4, 5)]
@@ -1250,10 +1262,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                                     int(m[4]) if m[4] == int(m[4]) else m[4],
                                     int(m[5]) if m[5] == int(m[5]) else m[5]]) for m in rows]
                     trows.append(_row(["", "รวม", tot[0], tot[1], tot[2], tot[3]], bold=True))
-                    _notion_write("PATCH", f"/blocks/{bid}/children",
-                                  {"children": [{"object": "block", "type": "table",
-                                                 "table": {"table_width": 6, "has_column_header": True,
-                                                           "has_row_header": False, "children": trows}}]})
+                    _replace_table(bid, {"object": "block", "type": "table",
+                                         "table": {"table_width": 6, "has_column_header": True,
+                                                   "has_row_header": False, "children": trows}})
+                else:  # empty list = all meals removed -> remove the table only
+                    _replace_table(bid, None)
                 wrote.append("meals")
             except Exception as e:
                 note_err[0] = str(e)
@@ -1402,12 +1415,6 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         return {"date": d, "session": sess, "page_id": row_id, "status": "session-logged-no-lifts"}
     bid = (row_id or "").replace("-", "")
     try:
-        kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
-        for b in kids.get("results", []):
-            try:
-                _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
-            except Exception:
-                pass
         trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
         for ex, load, sets, reps in parsed:
             if load is not None and sets and reps:
@@ -1418,10 +1425,9 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
             else:  # lazy row — logged without numbers
                 trows.append(_rowb([ex, "-", "-", "-", "-"]))
         trows.append(_rowb(["", "รวม volume", "", total_vol, ""], bold=True))
-        _notion_write("PATCH", f"/blocks/{bid}/children",
-                      {"children": [{"object": "block", "type": "table",
-                                     "table": {"table_width": 5, "has_column_header": True,
-                                               "has_row_header": False, "children": trows}}]})
+        _replace_table(bid, {"object": "block", "type": "table",
+                             "table": {"table_width": 5, "has_column_header": True,
+                                       "has_row_header": False, "children": trows}})
     except Exception as e:
         return {"date": d, "session": sess, "page_id": row_id, "status": "row-ok-table-failed",
                 "total_volume": total_vol, "error": str(e)}
