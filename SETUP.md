@@ -31,11 +31,12 @@ Collect and compute:
 
 Create a parent page `HealthTracker`, then these databases under it. Record every data-source ID you get — they're needed later.
 
-- **FoodLog** — day (title) · date (date) · kcal, p, c, f, exercise_burn, tdee_est (number) · deficit_actual (**formula**: `if(empty(prop("tdee_est")), toNumber(""), prop("tdee_est") - prop("kcal"))` — stays blank until the nightly sync writes tdee_est, then computes itself; the server never writes it) · exercise_type (text) · sync (select with options: pending=yellow, synced=green, estimated=blue, error=red)
+- **FoodLog** — day (title) · date (date) · kcal, p, c, f, exercise_burn, tdee_est (number) · deficit_actual (**formula**: `if(empty(prop("tdee_est")), toNumber(""), prop("tdee_est") - prop("kcal"))` — stays blank until the nightly sync writes tdee_est, then computes itself; the server never writes it) · exercise_type (text) · sync (select with options: pending=yellow, synced=green, estimated=blue, error=red) · **recovery fields (this version): sleep_score, sleep_hrs, hrv, rhr, body_battery_change, readiness (number)** — the nightly sync fills these so the coach reads food + recovery from one row
   > Installer note: add `deficit_actual` **after** `tdee_est` and `kcal` exist (the formula references them). If formula creation fails for any reason, create it as a plain **number** instead — the system still works fully (the server computes and writes it on number columns); it can be converted to a formula later.
-- **TrainingLog** — session (title) · type (select — start with: run, tempo, interval, recovery-run, weights, walk, ride; new values auto-create options) · date (date) · distance_km, avg_hr, max_hr, zone4_5_pct, kcal_burn_app, kcal_burn_adjusted, training_effect_aerobic, training_effect_anaerobic (number) · duration, pace, body_signals, coach_notes (text)
+- **TrainingLog** — session (title) · type (select — start with: run, tempo, interval, recovery-run, weights, walk, ride; new values auto-create options) · date (date) · distance_km, avg_hr, max_hr, zone4_5_pct, kcal_burn_app, kcal_burn_adjusted, training_effect_aerobic, training_effect_anaerobic (number) · duration, pace, body_signals, coach_notes (text) · **garmin_activity_id (text, this version)** — primary dedup key (avoids collapsing two workouts of similar duration). `type` select also auto-creates: threshold, vo2max, hyrox-sim, muay-thai, other
 - **BodyMetrics** — (record its data-source ID for `NOTION_BODYMETRICS_DS` — used by calibrate to read InBody fat mass) day (title, format `D[N] | YYYY-MM-DD` like FoodLog) · date (date) · w, h, bf, BMI, fatMass, leanMass, smm, bmr, score, visceral, whr (number) · source (select) · condition (select: morning-fasted=green, evening=yellow, post-workout=red, other=gray — lets calibrate compare like-for-like scans and cut BIA noise)
 - **FoodLib** — name (title) · serving (text) · kcal, p, c, f (number) · notes (text)
+- **ExerciseLib** (this version, optional — for weight-training) — name (title) · muscle_group (select) · default_load (number) · notes (text) · record its data-source ID for `NOTION_EXERCISELIB_DS`
 - **LessonsArchive** — plain page (estimation corrections get appended here)
 > ⚠️ **Never rename these database property names later** (e.g. `kcal` → `calories`). The server reads them by exact name; renaming silently breaks logging.
 
@@ -101,6 +102,7 @@ vals = {
   "NOTION_FOODLIB_DS": "{{FOODLIB_DATA_SOURCE_ID}}",
   "NOTION_TRAININGLOG_DS": "{{TRAININGLOG_DATA_SOURCE_ID}}",
   "NOTION_BODYMETRICS_DS": "{{BODYMETRICS_DATA_SOURCE_ID}}",
+  "NOTION_EXERCISELIB_DS": "{{EXERCISELIB_DATA_SOURCE_ID}}",
   "CONFIG_PAGE_ID": "{{CONFIG_PAGE_ID}}",
   "D1_DATE": "{{D1_DATE}}",
   "PLAYBOOK_URL": "https://raw.githubusercontent.com/bank3005-jpg/LeanLoop-for-Garmin/stable/playbook.md",
@@ -162,6 +164,17 @@ D1 (program day 1) = {{D1_DATE}}. Timezone: {{TIMEZONE}}.
 4. Cloud Shell: `curl -s "$URL/$(cat secret.txt)/closeday"` → per-day statuses (`no-foodlog-row` is normal before any logging)
 5. TrainingLog: after any Garmin workout (or the nightly run), a row appears automatically per activity (type/distance/duration/pace/HR/burn); the coach enriches it with notes when you chat about the session.
 6. After the first nightly run: FoodLog rows get a colored `sync` tag (green=real Garmin TDEE · blue=formula estimate, no-watch day · yellow=awaiting sync · red=sync failed) and the 🔥 cumulative-deficit progress line appears both under the FoodLog database title and as a callout on the HealthTracker page. Tip: users may HIDE the `date` column in views (the title shows the date) — but never delete it; the server finds rows by it
+
+## 🆕 Upgrading an existing install (this version)
+
+Existing users do NOT rebuild anything — just ADD these, then redeploy:
+
+**FoodLog** — add 6 Number properties: `sleep_score` `sleep_hrs` `hrv` `rhr` `body_battery_change` `readiness`
+**TrainingLog** — add 1 Text property: `garmin_activity_id`
+**ExerciseLib** (only if you want weight-training logging) — create the database above + add `NOTION_EXERCISELIB_DS` to `env.yaml`
+Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 19 tools).
+
+Everything is backward-safe: recovery/exercise features degrade gracefully if a property/DB is missing, and TrainingLog dedup falls back to name+distance without `garmin_activity_id`.
 
 ## Updates
 

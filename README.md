@@ -64,7 +64,7 @@ Claude (any device, incl. phone)
 
 **Privacy by design:** everything runs in *your* accounts. No third party — including this repo's author — ever sees your data. The server is protected by a long random secret; Garmin credentials never pass through chat.
 
-## 🧰 What's inside (16 lean MCP tools)
+## 🧰 What's inside (19 lean MCP tools)
 
 **Health** `get_wellness(metric)` — sleep, HRV, stress, body battery, heart rate, SpO2, respiration, intensity minutes, hydration, blood pressure, body composition, training readiness/status · `get_daily_summary`
 **Training** `get_activities` (recent or date range) · `get_activity(id, view)` — summary, splits, HR zones, FIT streams, aerobic decoupling · `get_fitness(metric)` — VO2max, race predictions, endurance/hill scores, lactate threshold, PRs, fitness age · `get_coach_snapshot` (one-call verdict data) · `analyze_activity` (one-call post-workout bundle) · `weekly_report` / `calibrate_report` (pre-computed reviews)

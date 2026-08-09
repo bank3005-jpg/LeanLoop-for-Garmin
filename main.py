@@ -626,14 +626,14 @@ def _log_training(d, acts):
         tkey = ((a.get("activityType") or {}).get("typeKey") or "")
         dur = a.get("duration") or 0
         km = (a.get("distance") or 0) / 1000.0
+        btype = _tl_type(a)
         if _is_dup(a.get("activityId"), name, round(km, 2) if km else None):
             continue
         cals = a.get("calories") or 0
         props = {
             "session": {"title": [{"text": {"content": name[:200]}}]},
             "date": {"date": {"start": d}},
-            "type": {"select": {"name": (_run_subtype(a.get("activityId")) or _tl_type(a))
-                                          if _tl_type(a) == "run" else _tl_type(a)}},
+            "type": {"select": {"name": (_run_subtype(a.get("activityId")) or btype) if btype == "run" else btype}},
             "kcal_burn_app": {"number": round(cals)},
             "kcal_burn_adjusted": {"number": round(cals * (CARDIO_BURN_FACTOR if tkey in _CARDIO else OTHER_BURN_FACTOR))},
         }

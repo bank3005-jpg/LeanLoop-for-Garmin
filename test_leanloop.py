@@ -20,6 +20,8 @@ def mock_food(children):
     def _n(m,p,pl,v):
         if m=="DELETE": d.append(p.split("/")[-1]); return {}
         if "query" in p: return {"results":[{"id":"pg","properties":{"kcal":{"number":1}}}]}
+        if p.startswith("/blocks/tbl/children") and m=="GET":
+            return {"results":[{"type":"table_row","table_row":{"cells":[[{"plain_text":h}] for h in ["เวลา","รายการ","kcal","p","c","f"]]}}]}
         if p.startswith("/blocks/") and m=="GET": return {"results":children}
         if p=="/pages": return {"id":"pg"}
         return {"results":[]}
@@ -59,7 +61,7 @@ ok("pagination follows has_more", [x["id"] for x in main._notion_query_all("ds")
 main._notion=lambda m,p,pl,v:{"results":[]} if "query" in p else {"id":"w"}
 main._notion_write=lambda m,p,pl:{"id":"x"}
 ok("weightlog lazy saves", main.weightlog_upsert(session="Pull",lifts=[["Deadlift"]])["status"]=="saved")
-ok("weightlog empty=session logged", main.weightlog_upsert(session="Pull",lifts=[])["status"]=="session-logged-no-lifts")
+ok("weightlog empty=cleared", main.weightlog_upsert(session="Pull",lifts=[])["status"]=="lifts-cleared")
 r=main.weightlog_upsert(page_id="exact",session="Push",lifts=[["Bench",60,4,8]])
 ok("weightlog page_id + volume", r["page_id"]=="exact" and r["total_volume"]==1920)
 
@@ -87,6 +89,25 @@ ok("recovery tolerant", main._recovery_props("2026-08-10")=={})
 t0=datetime(2026,8,10,7,0,0)
 rows=[{"timestamp":t0+timedelta(seconds=s)} for s in [0,1,2,302,303,304,305,306,307,308]]
 ok("moving-time split != naive under pause", main._moving_time_split(rows)!=len(rows)//2)
+
+# ---- 2nd-audit fixes ----
+main._call_cache.clear()
+def _fr(aid):
+    tt=datetime(2026,8,10,7,0,0); vv=100 if aid=="A" else 200
+    return [{"timestamp":tt+timedelta(seconds=s),"heart_rate":vv} for s in range(300)]
+main._fit_records=_fr; main._garmin="x"; main.client=lambda:object()
+_rA=main.get_activity_stream("A"); _rB=main.get_activity_stream("B")
+ok("cache: stream A != B (no key collision)", _rA["points"][0]["heart_rate"]!=_rB["points"][0]["heart_rate"])
+ok("cache: same args = hit", main.get_activity_stream("A")["points"][0]["heart_rate"]==100)
+ok("slim keeps downsampled stream (<=40 pts)", len(_rA["points"])<=40 and isinstance(main.slim(_rA)["points"],list))
+main._notion=lambda m,p,pl,v:{"results":[]} if "query" in p else {"id":"w"}
+main._notion_write=lambda m,p,pl:{"id":"x"}
+_seen=[]; main._replace_table=lambda bid,tb,header=None:_seen.append(("clear" if tb is None else "write",header))
+ok("weightlog None = table untouched", main.weightlog_upsert(session="P",lifts=None)["status"].startswith("session-row"))
+_seen.clear()
+ok("weightlog [] = cleared with lift header", main.weightlog_upsert(session="P",lifts=[])["status"]=="lifts-cleared" and _seen==[("clear",main._LIFT_HEADER)])
+ok("body_battery_change (not body_battery) in REC_KEYS", "body_battery_change" in main._REC_KEYS and "body_battery" not in main._REC_KEYS)
+
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
