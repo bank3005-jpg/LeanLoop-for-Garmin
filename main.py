@@ -473,6 +473,8 @@ def _deficit_val(props):
 
 _CARDIO = ("running", "cycling", "walking", "treadmill_running",
            "indoor_cycling", "lap_swimming", "open_water_swimming")
+CARDIO_BURN_FACTOR = 0.90  # conservative user-set adjustment on Garmin kcal
+OTHER_BURN_FACTOR = 0.85
 
 
 def _fmt_dur(sec):
@@ -514,7 +516,9 @@ def _tl_type(a):
         return "ride"
     if "walk" in t or "hik" in t:
         return "walk"
-    return "weights"
+    if "strength" in t or "weight" in t:
+        return "weights"
+    return "other"
 
 
 _TE_LABEL_MAP = (
@@ -544,7 +548,7 @@ def _log_training(d, acts):
     """Cron auto-creates a bare TrainingLog row per Garmin activity (idempotent by
     date+session title). Coach enriches coach_notes/body_signals later in chat."""
     if not TRAINING_DS or not acts:
-        return 0
+        return {"created": 0, "failed": 0}
     existing = []
     try:
         flt = {"filter": {"property": "date", "date": {"equals": d}}, "page_size": 100}
@@ -556,34 +560,40 @@ def _log_training(d, acts):
             rp = row.get("properties", {})
             ti = (rp.get("session") or {}).get("title") or []
             dt = (rp.get("duration") or {}).get("rich_text") or []
+            gd = (rp.get("garmin_activity_id") or {}).get("rich_text") or []
             existing.append({"title": "".join(x.get("plain_text", "") for x in ti).lower(),
                              "km": (rp.get("distance_km") or {}).get("number"),
-                             "sec": _parse_dur("".join(x.get("plain_text", "") for x in dt))})
+                             "sec": _parse_dur("".join(x.get("plain_text", "") for x in dt)),
+                             "gid": "".join(x.get("plain_text", "") for x in gd)})
     except Exception:
-        return 0
+        return {"created": 0, "failed": 0}
 
-    def _is_dup(name, km, sec):
-        """Already logged if ANY existing row on this date matches — by duration
-        (title-independent, so renaming a row never causes a duplicate), or by
-        name-substring + distance. Duration is Garmin-exact, the most reliable key."""
+    def _is_dup(aid, name, km):
+        """PRIMARY identity = Garmin activityId (exact). Fallback for legacy rows without an id =
+        name-substring + distance (never duration alone — two different workouts can share a duration)."""
+        aid = str(aid) if aid else ""
+        for e in existing:
+            if aid and e.get("gid") and aid == e["gid"]:
+                return True
         n = (name or "").lower().strip()
         for e in existing:
-            if sec and e.get("sec") and abs(sec - e["sec"]) <= 90:
-                return True
+            if e.get("gid"):
+                continue  # id-tagged rows already checked above
             if n and (e["title"] == n or n in e["title"]):
                 if km and e["km"]:
                     if abs(km - e["km"]) < 0.2:
                         return True
-                else:
+                elif not km and not e["km"]:
                     return True
         return False
     made = 0
+    failed = 0
     for a in acts:
         name = a.get("activityName") or ((a.get("activityType") or {}).get("typeKey") or "activity")
         tkey = ((a.get("activityType") or {}).get("typeKey") or "")
         dur = a.get("duration") or 0
         km = (a.get("distance") or 0) / 1000.0
-        if _is_dup(name, round(km, 2) if km else None, int(dur) if dur else None):
+        if _is_dup(a.get("activityId"), name, round(km, 2) if km else None):
             continue
         cals = a.get("calories") or 0
         props = {
@@ -592,8 +602,10 @@ def _log_training(d, acts):
             "type": {"select": {"name": (_run_subtype(a.get("activityId")) or _tl_type(a))
                                           if _tl_type(a) == "run" else _tl_type(a)}},
             "kcal_burn_app": {"number": round(cals)},
-            "kcal_burn_adjusted": {"number": round(cals * (0.90 if tkey in _CARDIO else 0.85))},
+            "kcal_burn_adjusted": {"number": round(cals * (CARDIO_BURN_FACTOR if tkey in _CARDIO else OTHER_BURN_FACTOR))},
         }
+        if a.get("activityId"):
+            props["garmin_activity_id"] = {"rich_text": [{"text": {"content": str(a["activityId"])}}]}
         if km:
             props["distance_km"] = {"number": round(km, 2)}
         if dur:
@@ -618,8 +630,8 @@ def _log_training(d, acts):
                          "properties": props}, "2025-09-03")
             made += 1
         except Exception:
-            pass
-    return made
+            failed += 1
+    return {"created": made, "failed": failed}
 
 
 def _recovery_props(d):
@@ -658,12 +670,14 @@ def _close_one(d):
     # logged that day (a training day with no food row must still get its rows).
     try:
         acts = client().get_activities_by_date(d, d) or []
+        acts_ok = True
     except Exception:
         acts = []
+        acts_ok = False  # unknown activity state — do NOT infer "no activity"
     try:
         trained = _log_training(d, acts)
     except Exception:
-        trained = 0
+        trained = {"created": 0, "failed": 0}
     row = _find_row(d)
     if not row:
         return {"date": d, "status": "no-foodlog-row", "trained": trained}
@@ -678,7 +692,7 @@ def _close_one(d):
     new_props = {}
     if total:
         tdee = round(total)
-        if not acts and row_burn:
+        if acts_ok and not acts and row_burn:
             tdee = round(total + row_burn)
         tag = "synced"
     else:
@@ -698,7 +712,7 @@ def _close_one(d):
         names, burn = [], 0.0
         for a in acts:
             t = ((a.get("activityType") or {}).get("typeKey") or "")
-            burn += (a.get("calories") or 0) * (0.90 if t in _CARDIO else 0.85)
+            burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
             names.append(a.get("activityName") or t)
         if not ((props.get("exercise_type") or {}).get("rich_text") or []):
             new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(names)[:200]}}]}
