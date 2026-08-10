@@ -1954,8 +1954,12 @@ def analyze_activity(activity_id: str = "") -> dict:
         try:
             stime = start_full[11:16]
             dayrow = foodlog_get(sdate)
-            meals = dayrow.get("meals") or [] if isinstance(dayrow, dict) else []
-            if stime:
+            if isinstance(dayrow, dict) and dayrow.get("error"):
+                r["pre_workout_fuel_error"] = dayrow["error"]  # FoodLog read FAILED -> UNKNOWN, never infer fasted
+                meals = None
+            else:
+                meals = dayrow.get("meals") or [] if isinstance(dayrow, dict) else []
+            if stime and meals is not None:
                 start_min = int(stime[:2]) * 60 + int(stime[3:5])
                 pre = []
                 for m in meals:

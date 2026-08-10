@@ -394,5 +394,29 @@ main._notion=_e2e_t
 _r=main.traininglog_read("2026-08-10",type="weights")
 ok("RP-E2E traininglog_read lift read fail = error (never lifts=[])", isinstance(_r,dict) and "error" in _r)
 
+# ================= P2 micro-fix: FoodLog read fail must NOT infer fasted =================
+main.call=_orig_call; main._call_cache.clear()
+class _GAf:
+    def get_activities(s,a,b): return [{"activityId":"88","activityType":{"typeKey":"running"},"startTimeLocal":"2026-08-10T07:00:00","duration":1800,"distance":5000,"averageHR":150}]
+    def get_activity(s,aid): return {"activityId":"88","activityName":"Run","activityType":{"typeKey":"running"},"startTimeLocal":"2026-08-10T07:00:00","duration":1800,"distance":5000,"averageHR":150}
+    def get_activity_splits(s,aid): return {"lapDTOs":[]}
+    def get_activity_hr_in_timezones(s,aid): return []
+    def get_activities_by_date(s,*a): return []
+    def get_sleep_data(s,d): return {}
+main.client=lambda:_GAf(); main._fit_records=lambda aid:[]
+main.foodlog_get_range=lambda a,b:[]
+_orig_fg=main.foodlog_get
+# read FAILURE -> pre_workout_fuel_error present, pre_workout_fuel absent, no fasted
+main.foodlog_get=lambda d="":{"date":d,"meals":None,"error":"meal-table-read-failed: down"}
+_r=main.analyze_activity()
+ok("P2 foodlog read fail = pre_workout_fuel_error, never fasted",
+   "pre_workout_fuel_error" in _r and "pre_workout_fuel" not in _r)
+# verified EMPTY -> fasted=True still correct
+main.foodlog_get=lambda d="":{"date":d,"meals":[]}
+_r2=main.analyze_activity()
+ok("P2 verified-empty meals still -> fasted=True",
+   isinstance(_r2.get("pre_workout_fuel"),dict) and _r2["pre_workout_fuel"].get("fasted") is True)
+main.foodlog_get=_orig_fg
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
