@@ -418,5 +418,18 @@ ok("P2 verified-empty meals still -> fasted=True",
    isinstance(_r2.get("pre_workout_fuel"),dict) and _r2["pre_workout_fuel"].get("fasted") is True)
 main.foodlog_get=_orig_fg
 
+# foodlog_upsert echoes the FULL saved table (coach can't show only the new meal)
+_seen=[]
+def _fu(m,p,pl,v):
+    if "query" in p: return {"results":[{"id":"pg","properties":{"kcal":{"number":1}}}]}
+    return {"results":[]}
+main._notion=_fu; main._notion_write=lambda m,p,pl:{"id":"x"}
+main._find_row=lambda d:{"id":"pg","properties":{"kcal":{"number":1}}}
+main._replace_table=lambda bid,tb,header=None:_seen.append(1)
+_r=main.foodlog_upsert(meals=[["12:00","rice",500,20,60,10],["08:00","egg",160,12,2,10]])
+ok("foodlog_upsert returns FULL saved table (sorted) + totals",
+   isinstance(_r.get("meals"),list) and len(_r["meals"])==2 and _r["meals"][0][0]=="08:00"
+   and _r.get("totals",{}).get("kcal")==660)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

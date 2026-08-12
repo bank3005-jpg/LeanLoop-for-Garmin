@@ -1323,7 +1323,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                    meals: list | str | None = None,
                    meal_note: str | None = None) -> dict:
     """Create or update the Notion FoodLog row for a date (one row per day, exact match — never creates duplicates). Only provided fields are written; omitted fields stay unchanged.
-    meals: the FULL day's meals so far — either a native array or a JSON string, each element ["HH:MM","dish",kcal,p,c,f] (both accepted). The server rebuilds a clean meal table on the day page and recomputes kcal/p/c/f from it, so send the whole running list on every add/edit/remove.
+    meals: the FULL day's meals so far — either a native array or a JSON string, each element ["HH:MM","dish",kcal,p,c,f] (both accepted). The server rebuilds a clean meal table on the day page and recomputes kcal/p/c/f from it, so send the whole running list on every add/edit/remove. On a meal write the response echoes `meals` (the FULL saved day, sorted) + `totals` — ALWAYS render that whole table, never only the item just added.
     date=YYYY-MM-DD, default today."""
     d = day(date)
     parsed_meals = None
@@ -1428,6 +1428,9 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                     res["error"] = f"meal-table-write-failed: {note_err[0]}"
                 else:
                     res["meal_note_error"] = note_err[0]
+            if parsed_meals is not None and "meals" in res["wrote"]:
+                res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
+                res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
             return res
         title = _day_title(d)
         full_props = {"day": {"title": [{"text": {"content": title}}]},
@@ -1449,6 +1452,9 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                 res["error"] = f"meal-table-write-failed: {note_err[0]}"
             else:
                 res["meal_note_error"] = note_err[0]
+        if parsed_meals is not None and "meals" in res["wrote"]:
+            res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
+            res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
         return res
     except Exception as e:
         return {"error": str(e)}
