@@ -136,27 +136,40 @@ def _bump(tool, result):
     return u
 
 
-def call(fn, *args):
+def _contains_error(obj):
+    """True if a dict/list contains an 'error' key anywhere (so partial-failure composite results
+    like get_coach_snapshot with out['sleep']={'error':...} are NOT cached as if successful)."""
+    if isinstance(obj, dict):
+        return "error" in obj or any(_contains_error(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_error(v) for v in obj)
+    return False
+
+
+def call(fn, *args, retry=True, ckey=None, cacheable=None, max_list=40):
     global _garmin
     import sys
     import time as _t
     tool = sys._getframe(1).f_code.co_name
-    key = (tool, args)
-    cacheable = tool.startswith("get_")
+    key = (tool, ckey if ckey is not None else args)  # ckey = explicit key when args are hidden in a closure
+    if cacheable is None:
+        cacheable = tool.startswith("get_")
     if cacheable:
         hit = _cget(key)
         if hit is not None:
             _bump(tool, hit)[2] += 1
             return hit
     try:
-        r = _tabulate(slim(fn(client())(*args)))
-    except Exception:
-        _garmin = None  # token likely expired in-session: retry with fresh login
+        r = _tabulate(slim(fn(client())(*args), max_list))
+    except Exception as e:
+        if not retry:
+            return {"error": str(e)}  # non-idempotent write — never blind-retry (avoid duplicates)
+        _garmin = None  # token likely expired in-session: retry once with fresh login
         try:
-            r = _tabulate(slim(fn(client())(*args)))
-        except Exception as e:
-            return {"error": str(e)}
-    if cacheable and not (isinstance(r, dict) and "error" in r):
+            r = _tabulate(slim(fn(client())(*args), max_list))
+        except Exception as e2:
+            return {"error": str(e2)}
+    if cacheable and not _contains_error(r):
         _cput(key, r, 600)
     _bump(tool, r)
     return r
@@ -171,7 +184,7 @@ _SLEEP_NOISE = (
 
 
 def get_sleep(date: str = "", full: bool = False) -> dict:
-    """Sleep for a night: score, duration, deep/light/REM/awake, HRV during sleep, resting HR, body battery change. date=YYYY-MM-DD, default today (i.e. last night). full=true returns raw time-series too."""
+    """Sleep for a night: score, duration, deep/light/REM/awake, HRV during sleep, resting HR, body battery change. date=YYYY-MM-DD, default today (i.e. last night). full=true returns the expanded response (very large time-series arrays may still be compacted by the payload-safety layer)."""
     r = call(lambda g: g.get_sleep_data, day(date))
     if not full and isinstance(r, dict):
         r = {k: v for k, v in r.items() if k not in _SLEEP_NOISE}
@@ -205,7 +218,7 @@ _DS_KEYS = ("calendarDate", "totalKilocalories", "activeKilocalories", "bmrKiloc
 
 @mcp.tool()
 def get_daily_summary(date: str = "", full: bool = False) -> dict:
-    """Daily wellness summary: steps, calories, distance, intensity minutes, heart rate, stress, body battery. Compact by default; full=true returns every raw field."""
+    """Daily wellness summary: steps, calories, distance, intensity minutes, heart rate, stress, body battery. Compact by default; full=true returns the expanded fields (very large arrays may still be compacted for payload safety)."""
     r = call(lambda g: g.get_stats, day(date))
     if full or not isinstance(r, dict):
         return r
@@ -255,7 +268,7 @@ def _act_slim(acts):
 
 def _activities_recent(limit: int = 10) -> list | dict:
     """Recent activities (runs, rides, workouts...). Returns key fields per activity."""
-    return call(lambda g: lambda: _act_slim(g.get_activities(0, min(limit, 50))))
+    return call(lambda g: lambda: _act_slim(g.get_activities(0, min(limit, 50))), ckey=(limit,), cacheable=True, max_list=60)
 
 
 def get_body_composition(date: str = "") -> dict:
@@ -270,7 +283,7 @@ def get_activity_details(activity_id: str) -> dict:
 
 def get_activity_splits(activity_id: str) -> dict:
     """Per-lap/km splits of one activity: pace, HR, cadence per split."""
-    return call(lambda g: g.get_activity_splits, activity_id)
+    return call(lambda g: g.get_activity_splits, activity_id, max_list=100)
 
 
 def get_activity_hr_zones(activity_id: str) -> list | dict:
@@ -280,7 +293,7 @@ def get_activity_hr_zones(activity_id: str) -> list | dict:
 
 def get_activities_range(start_date: str, end_date: str = "", activity_type: str = "") -> list | dict:
     """Activities between two dates (YYYY-MM-DD). Optional activity_type: running, cycling, swimming, fitness_equipment..."""
-    return call(lambda g: lambda: _act_slim(g.get_activities_by_date(start_date, end_date or None, activity_type or None)))
+    return call(lambda g: lambda: _act_slim(g.get_activities_by_date(start_date, end_date or None, activity_type or None)), ckey=(start_date, end_date, activity_type), max_list=200)
 
 
 def get_race_predictions() -> dict:
@@ -316,7 +329,7 @@ def get_personal_records() -> list | dict:
 @mcp.tool()
 def get_weight_history(start_date: str, end_date: str = "") -> dict:
     """Weigh-in history between dates (YYYY-MM-DD)."""
-    return call(lambda g: lambda: g.get_weigh_ins(start_date, end_date or day("")))
+    return call(lambda g: lambda: g.get_weigh_ins(start_date, end_date or day("")), ckey=(start_date, end_date), max_list=200)
 
 
 def get_hydration(date: str = "") -> dict:
@@ -326,7 +339,7 @@ def get_hydration(date: str = "") -> dict:
 
 def get_blood_pressure(start_date: str = "", end_date: str = "") -> dict:
     """Blood pressure readings between dates (if logged in Garmin Connect)."""
-    return call(lambda g: lambda: g.get_blood_pressure(start_date or day(""), end_date or None))
+    return call(lambda g: lambda: g.get_blood_pressure(start_date or day(""), end_date or None), ckey=(start_date, end_date))
 
 
 def get_intensity_minutes(date: str = "") -> dict:
@@ -368,7 +381,7 @@ def add_body_composition(
             bmi=bmi,
         )
         return {"status": "saved", "response": r}
-    return call(lambda g: lambda: f(g))
+    return call(lambda g: lambda: f(g), retry=False)
 
 
 @mcp.tool()
@@ -434,6 +447,7 @@ import urllib.request as _url
 
 FOODLOG_DS = os.environ.get("NOTION_FOODLOG_DS", "")
 TRAINING_DS = os.environ.get("NOTION_TRAININGLOG_DS", "")
+EXERCISELIB_DS = os.environ.get("NOTION_EXERCISELIB_DS", "")
 BODYMETRICS_DS = os.environ.get("NOTION_BODYMETRICS_DS", "")
 
 
@@ -450,6 +464,27 @@ def _notion(method, path, payload, version):
     )
     with _url.urlopen(req, timeout=30) as r:
         return _json.loads(r.read())
+
+
+def _notion_query_all(ds, filt=None):
+    """Query a Notion db/data_source following pagination — for places that need COMPLETE history
+    (avoids silent truncation at 100 as history grows). Returns the flat list of result rows."""
+    out, cursor = [], None
+    while True:
+        payload = {"page_size": 100}
+        if filt:
+            payload["filter"] = filt
+        if cursor:
+            payload["start_cursor"] = cursor
+        try:
+            r = _notion("POST", f"/databases/{ds}/query", payload, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{ds}/query", payload, "2025-09-03")
+        out.extend(r.get("results", []))
+        if not r.get("has_more"):
+            break
+        cursor = r.get("next_cursor")
+    return out
 
 
 def _find_row(d):
@@ -472,6 +507,8 @@ def _deficit_val(props):
 
 _CARDIO = ("running", "cycling", "walking", "treadmill_running",
            "indoor_cycling", "lap_swimming", "open_water_swimming")
+CARDIO_BURN_FACTOR = 0.90  # conservative user-set adjustment on Garmin kcal
+OTHER_BURN_FACTOR = 0.85
 
 
 def _fmt_dur(sec):
@@ -513,14 +550,39 @@ def _tl_type(a):
         return "ride"
     if "walk" in t or "hik" in t:
         return "walk"
-    return "weights"
+    if "strength" in t or "weight" in t:
+        return "weights"
+    return "other"
+
+
+_TE_LABEL_MAP = (
+    ("RECOVERY", "recovery-run"), ("AEROBIC_BASE", "run"), ("BASE", "run"),
+    ("TEMPO", "tempo"), ("THRESHOLD", "threshold"), ("VO2MAX", "vo2max"),
+    ("ANAEROBIC", "interval"), ("SPRINT", "interval"),
+)
+
+
+def _run_subtype(aid):
+    """Garmin's own trainingEffectLabel -> run subtype for the TrainingLog `type` select.
+    Tolerant: returns None on ANY failure so _log_training always falls back to the basic
+    type and the row is still created. Uses Garmin's classification, not a home-made one."""
+    try:
+        det = client().get_activity(str(aid)) or {}
+        lbl = (((det.get("summaryDTO") or {}).get("trainingEffectLabel")) or "").upper()
+        for key, val in _TE_LABEL_MAP:
+            if key in lbl:
+                return val
+    except Exception:
+        pass
+    return None
+
 
 
 def _log_training(d, acts):
     """Cron auto-creates a bare TrainingLog row per Garmin activity (idempotent by
     date+session title). Coach enriches coach_notes/body_signals later in chat."""
     if not TRAINING_DS or not acts:
-        return 0
+        return {"created": 0, "failed": 0}
     existing = []
     try:
         flt = {"filter": {"property": "date", "date": {"equals": d}}, "page_size": 100}
@@ -532,43 +594,53 @@ def _log_training(d, acts):
             rp = row.get("properties", {})
             ti = (rp.get("session") or {}).get("title") or []
             dt = (rp.get("duration") or {}).get("rich_text") or []
+            gd = (rp.get("garmin_activity_id") or {}).get("rich_text") or []
             existing.append({"title": "".join(x.get("plain_text", "") for x in ti).lower(),
                              "km": (rp.get("distance_km") or {}).get("number"),
-                             "sec": _parse_dur("".join(x.get("plain_text", "") for x in dt))})
-    except Exception:
-        return 0
+                             "sec": _parse_dur("".join(x.get("plain_text", "") for x in dt)),
+                             "gid": "".join(x.get("plain_text", "") for x in gd)})
+    except Exception as e:
+        # dedup state is UNKNOWN — do NOT create blindly, and do NOT report false success.
+        return {"created": 0, "failed": len(acts), "error": f"traininglog-query-failed: {str(e)[:80]}"}
 
-    def _is_dup(name, km, sec):
-        """Already logged if ANY existing row on this date matches — by duration
-        (title-independent, so renaming a row never causes a duplicate), or by
-        name-substring + distance. Duration is Garmin-exact, the most reliable key."""
+    def _is_dup(aid, name, km):
+        """PRIMARY identity = Garmin activityId (exact). Fallback for legacy rows without an id =
+        name-substring + distance (never duration alone — two different workouts can share a duration)."""
+        aid = str(aid) if aid else ""
+        for e in existing:
+            if aid and e.get("gid") and aid == e["gid"]:
+                return True
         n = (name or "").lower().strip()
         for e in existing:
-            if sec and e.get("sec") and abs(sec - e["sec"]) <= 90:
-                return True
+            if e.get("gid"):
+                continue  # id-tagged rows already checked above
             if n and (e["title"] == n or n in e["title"]):
                 if km and e["km"]:
                     if abs(km - e["km"]) < 0.2:
                         return True
-                else:
+                elif not km and not e["km"]:
                     return True
         return False
     made = 0
+    failed = 0
     for a in acts:
         name = a.get("activityName") or ((a.get("activityType") or {}).get("typeKey") or "activity")
         tkey = ((a.get("activityType") or {}).get("typeKey") or "")
         dur = a.get("duration") or 0
         km = (a.get("distance") or 0) / 1000.0
-        if _is_dup(name, round(km, 2) if km else None, int(dur) if dur else None):
+        btype = _tl_type(a)
+        if _is_dup(a.get("activityId"), name, round(km, 2) if km else None):
             continue
         cals = a.get("calories") or 0
         props = {
             "session": {"title": [{"text": {"content": name[:200]}}]},
             "date": {"date": {"start": d}},
-            "type": {"select": {"name": _tl_type(a)}},
+            "type": {"select": {"name": (_run_subtype(a.get("activityId")) or btype) if btype == "run" else btype}},
             "kcal_burn_app": {"number": round(cals)},
-            "kcal_burn_adjusted": {"number": round(cals * (0.90 if tkey in _CARDIO else 0.85))},
+            "kcal_burn_adjusted": {"number": round(cals * (CARDIO_BURN_FACTOR if tkey in _CARDIO else OTHER_BURN_FACTOR))},
         }
+        if a.get("activityId"):
+            props["garmin_activity_id"] = {"rich_text": [{"text": {"content": str(a["activityId"])}}]}
         if km:
             props["distance_km"] = {"number": round(km, 2)}
         if dur:
@@ -583,18 +655,55 @@ def _log_training(d, acts):
             props["training_effect_aerobic"] = {"number": round(a["aerobicTrainingEffect"], 1)}
         if a.get("anaerobicTrainingEffect") is not None:
             props["training_effect_anaerobic"] = {"number": round(a["anaerobicTrainingEffect"], 1)}
-        try:
+        def _create(p):
             try:
                 _notion("POST", "/pages",
-                        {"parent": {"database_id": TRAINING_DS}, "properties": props}, "2022-06-28")
+                        {"parent": {"database_id": TRAINING_DS}, "properties": p}, "2022-06-28")
             except Exception:
                 _notion("POST", "/pages",
                         {"parent": {"type": "data_source_id", "data_source_id": TRAINING_DS},
-                         "properties": props}, "2025-09-03")
+                         "properties": p}, "2025-09-03")
+        try:
+            _create(props)
             made += 1
         except Exception:
-            pass
-    return made
+            try:  # old schema without garmin_activity_id -> retry without it (dedup falls back to name+distance)
+                _create({k: v for k, v in props.items() if k != "garmin_activity_id"})
+                made += 1
+            except Exception:
+                failed += 1
+    return {"created": made, "failed": failed}
+
+
+def _recovery_props(d):
+    """A day's recovery metrics from Garmin as Notion number props (non-None only).
+    Sleep for day D = the night ending the morning of D. Pure data-gather, no writes."""
+    out = {}
+    try:
+        s = client().get_sleep_data(d) or {}
+        dto = s.get("dailySleepDTO") or {}
+        secs = dto.get("sleepTimeSeconds")
+        for k, v in {
+            "sleep_score": ((dto.get("sleepScores") or {}).get("overall") or {}).get("value"),
+            "sleep_hrs": round(secs / 3600, 1) if secs else None,
+            "hrv": s.get("avgOvernightHrv"),
+            "rhr": s.get("restingHeartRate"),
+            "body_battery_change": s.get("bodyBatteryChange"),
+        }.items():
+            if v is not None:
+                out[k] = {"number": v}
+    except Exception:
+        pass
+    try:
+        tr = client().get_training_readiness(d)
+        if isinstance(tr, list) and tr:
+            tr = tr[0]
+        if isinstance(tr, dict) and tr.get("score") is not None:
+            out["readiness"] = {"number": tr["score"]}
+    except Exception:
+        pass
+    return out
+
 
 
 def _close_one(d):
@@ -602,12 +711,18 @@ def _close_one(d):
     # logged that day (a training day with no food row must still get its rows).
     try:
         acts = client().get_activities_by_date(d, d) or []
+        acts_ok = True
     except Exception:
         acts = []
+        acts_ok = False  # unknown activity state — do NOT infer "no activity"
     try:
         trained = _log_training(d, acts)
-    except Exception:
-        trained = 0
+    except Exception as e:
+        trained = {"created": 0, "failed": len(acts), "error": str(e)[:120]}
+    if not acts_ok:
+        # Garmin activity fetch failed — never imply "no training happened"; flag it so the
+        # closeday result tells the truth. The existing 3-day re-close retries this naturally.
+        trained = {**trained, "activities_unknown": True}
     row = _find_row(d)
     if not row:
         return {"date": d, "status": "no-foodlog-row", "trained": trained}
@@ -622,7 +737,7 @@ def _close_one(d):
     new_props = {}
     if total:
         tdee = round(total)
-        if not acts and row_burn:
+        if acts_ok and not acts and row_burn:
             tdee = round(total + row_burn)
         tag = "synced"
     else:
@@ -642,17 +757,29 @@ def _close_one(d):
         names, burn = [], 0.0
         for a in acts:
             t = ((a.get("activityType") or {}).get("typeKey") or "")
-            burn += (a.get("calories") or 0) * (0.90 if t in _CARDIO else 0.85)
+            burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
             names.append(a.get("activityName") or t)
         if not ((props.get("exercise_type") or {}).get("rich_text") or []):
             new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(names)[:200]}}]}
         if (props.get("exercise_burn") or {}).get("number") in (None, 0):
             new_props["exercise_burn"] = {"number": round(burn)}
-    if not new_props:
+    # recovery: same pattern as exercise_type/burn above — add only if this day's row
+    # doesn't already carry it (keeps the nightly 3-day re-close from refetching).
+    rec = _recovery_props(d) if any((props.get(k) or {}).get("number") is None
+                                    for k in ("sleep_score", "readiness")) else {}
+    if not new_props and not rec:
         return {"date": d, "status": "already-synced", "tdee": tdee, "trained": trained}
-    _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
+    try:
+        _notion_write("PATCH", "/pages/" + row["id"], {"properties": {**new_props, **rec}})
+        wrote = list(new_props) + list(rec)
+    except Exception:
+        # old schema without recovery columns -> NEVER let recovery block the core TDEE/sync write
+        wrote = []
+        if new_props:
+            _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
+            wrote = list(new_props)
     return {"date": d, "status": "updated", "tdee": tdee, "tag": tag,
-            "wrote": list(new_props), "trained": trained}
+            "wrote": wrote, "trained": trained}
 
 
 def _update_progress(page_id):
@@ -718,7 +845,8 @@ async def health(request):
     except Exception as e:
         checks["notion_foodlog"] = f"FAIL: {str(e)[:150]}"
     for dsname, dsid in (("notion_foodlib", os.environ.get("NOTION_FOODLIB_DS", "")),
-                         ("notion_traininglog", os.environ.get("NOTION_TRAININGLOG_DS", ""))):
+                         ("notion_traininglog", os.environ.get("NOTION_TRAININGLOG_DS", "")),
+                         ("notion_exerciselib", os.environ.get("NOTION_EXERCISELIB_DS", ""))):
         if not dsid:
             checks[dsname] = "not-set"
             continue
@@ -800,6 +928,30 @@ def _fit_records(activity_id: str) -> list:
     return recs
 
 
+def _moving_time_split(rows, max_gap=10.0):
+    """Index that splits rows at HALF of moving time (sum of dt between samples, capping pause gaps)
+    instead of half the sample count — robust to pauses / Smart Recording where samples are not
+    uniformly spaced. Pure/testable. Falls back to the midpoint if timestamps are unusable."""
+    if len(rows) < 3:
+        return len(rows) // 2
+    dts = [0.0]
+    for i in range(1, len(rows)):
+        try:
+            dt = (rows[i]["timestamp"] - rows[i - 1]["timestamp"]).total_seconds()
+        except Exception:
+            dt = 0.0
+        dts.append(min(dt, max_gap) if dt > 0 else 0.0)
+    total = sum(dts)
+    if total <= 0:
+        return len(rows) // 2
+    acc, half = 0.0, total / 2
+    for i in range(1, len(rows)):
+        acc += dts[i]
+        if acc >= half:
+            return max(1, i)
+    return len(rows) // 2
+
+
 def _decoupling_calc(recs: list, skip_warmup_min: float = 5.0) -> dict:
     """Pure calculation so it can be unit-tested. recs: dicts with timestamp/heart_rate/speed."""
     moving = [r for r in recs
@@ -811,7 +963,7 @@ def _decoupling_calc(recs: list, skip_warmup_min: float = 5.0) -> dict:
             if (r["timestamp"] - t0).total_seconds() >= skip_warmup_min * 60]
     if len(work) < 120:
         work = moving
-    mid = len(work) // 2
+    mid = _moving_time_split(work)
     h1, h2 = work[:mid], work[mid:]
 
     def _avg(rows, key):
@@ -901,7 +1053,7 @@ def _pacing_calc(recs: list) -> dict:
     runrows = [r for r in rows if _cls(r) == "run" and r.get("speed")]
     fade = None
     if len(runrows) >= 120:
-        mid = len(runrows) // 2
+        mid = _moving_time_split(runrows)
         s1 = sum(r["speed"] for r in runrows[:mid]) / mid
         s2 = sum(r["speed"] for r in runrows[mid:]) / (len(runrows) - mid)
         if s1:
@@ -938,11 +1090,11 @@ def get_activity_pacing(activity_id: str) -> dict:
     """Walk/pause detection + pacing fade from the FIT file: true running pace (walks excluded), walk seconds per km, first-vs-second-half fade."""
     def f():
         return _pacing_calc(_fit_records(activity_id))
-    return call(lambda g: lambda: f())
+    return call(lambda g: lambda: f(), ckey=("pacing", activity_id))
 
 
 def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,cadence",
-                        max_points: int = 60) -> dict:
+                        max_points: int = 40) -> dict:
     """Downsampled second-by-second sensor streams from an activity's FIT file. metrics: comma list from heart_rate,speed,cadence,power,altitude,distance. Returns ~max_points averaged buckets."""
     def f():
         recs = _fit_records(activity_id)
@@ -950,7 +1102,7 @@ def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,caden
             return {"error": "no record data in FIT file"}
         want = [m.strip() for m in metrics.split(",") if m.strip()]
         t0 = recs[0]["timestamp"]
-        n = max(1, len(recs) // max(1, min(max_points, 200)))
+        n = max(1, -(-len(recs) // min(max(max_points, 1), 40)))  # ceil -> <=40 buckets (slim-safe)
         points = []
         for i in range(0, len(recs), n):
             chunk = recs[i:i + n]
@@ -962,14 +1114,14 @@ def get_activity_stream(activity_id: str, metrics: str = "heart_rate,speed,caden
             points.append(pt)
         return {"activity_id": str(activity_id), "raw_records": len(recs),
                 "points": points}
-    return call(lambda g: lambda: f())
+    return call(lambda g: lambda: f(), ckey=(activity_id, metrics, max_points))
 
 
 def get_aerobic_decoupling(activity_id: str, skip_warmup_min: float = 5.0) -> dict:
     """Aerobic decoupling (Pa:Hr drift) for a steady activity: compares speed/HR efficiency of first vs second half. <5% = strong aerobic base. Use on steady runs/rides, not intervals."""
     def f():
         return _decoupling_calc(_fit_records(activity_id), skip_warmup_min)
-    return call(lambda g: lambda: f())
+    return call(lambda g: lambda: f(), ckey=("decoupling", activity_id, skip_warmup_min))
 
 
 # ---- FoodLog direct tools (exact date query — no fuzzy search) --------------
@@ -992,6 +1144,62 @@ def _notion_write(method, path, payload):
         return _notion(method, path, payload, "2025-09-03")
 
 
+_MEAL_HEADER = ["เวลา", "รายการ", "kcal", "p", "c", "f"]
+_LIFT_HEADER = ["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"]
+
+
+def _replace_table(bid, table_block, header=None):
+    """Replace ONLY the LeanLoop-owned table (matched by its header row), NEVER a user's own table.
+    Data-safe ordering: for a REPLACE, APPEND the new table FIRST, then delete the old one(s) — so a
+    failed append never destroys existing data (old stays intact). A stale old table left by a failed
+    delete is harmless because the read-side parsers prefer the NEWEST matching table. For an explicit
+    CLEAR (table_block=None) deletion IS the operation, so a failed delete PROPAGATES (caller must not
+    report success)."""
+    try:
+        kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
+    except Exception:
+        if table_block is None:
+            raise  # CLEAR: unknown table state must fail closed — never report a false "cleared"
+        kids = {"results": []}  # REPLACE stays data-safe (new table is appended first)
+    owned = []
+    for b in kids.get("results", []):
+        if b.get("type") != "table":
+            continue
+        if header is None:
+            owned.append(b["id"]); continue
+        try:
+            rr = _notion("GET", f"/blocks/{b['id'].replace('-', '')}/children?page_size=1", None, "2022-06-28")
+            fr = (rr.get("results") or [{}])[0]
+            cells = ["".join(x.get("plain_text", "") for x in c).strip()
+                     for c in (fr.get("table_row", {}).get("cells", []))]
+            if cells == header:
+                owned.append(b["id"])  # our table
+        except Exception:
+            if table_block is None:
+                raise  # CLEAR: ownership UNKNOWN must fail closed — never a false "cleared"
+            continue  # REPLACE: can't verify -> never touch it (safe, new table appended first)
+    if table_block is not None:
+        # APPEND new first — if this raises, propagate; the old table is still intact.
+        _notion_write("PATCH", f"/blocks/{bid}/children", {"children": [table_block]})
+        stale = 0
+        for tid in owned:  # only NOW remove the old copy; a failure just leaves a stale dup
+            try:
+                _notion("DELETE", f"/blocks/{tid}", None, "2022-06-28")
+            except Exception:
+                stale += 1
+        return {"stale_tables": stale} if stale else {}
+    # CLEAR: a delete failure must NOT look like success
+    err = None
+    for tid in owned:
+        try:
+            _notion("DELETE", f"/blocks/{tid}", None, "2022-06-28")
+        except Exception as e:
+            err = e
+    if err:
+        raise err
+    return {}
+
+
 def _parse_meals(page_id):
     """Read the meal table already on a FoodLog day page → list of [time, item, kcal, p, c, f]."""
     if not page_id:
@@ -999,34 +1207,37 @@ def _parse_meals(page_id):
     bid = page_id.replace("-", "")
     try:
         kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
-    except Exception:
-        return []
-    out = []
+    except Exception as e:
+        raise RuntimeError(f"meal-page-read-failed: {e}")  # UNKNOWN != empty (coach rewrites the FULL list)
+    def _cells(r):
+        return ["".join(x.get("plain_text", "") for x in c).strip()
+                for c in r.get("table_row", {}).get("cells", [])]
+    newest = []
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
         tid = b["id"].replace("-", "")
         try:
             rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
-        except Exception:
-            return []
-        for r in rows.get("results", []):
-            if r.get("type") != "table_row":
-                continue
-            cells = r.get("table_row", {}).get("cells", [])
-
-            def _t(cell):
-                return "".join(x.get("plain_text", "") for x in cell).strip()
-
-            v = [_t(c) for c in cells]
-            if len(v) < 6 or v[0] == "เวลา" or v[1] == "รวม":
-                continue
+        except Exception as e:
+            raise RuntimeError(f"meal-table-read-failed: {e}")  # can't prove it's NOT the meal table -> fail visible
+        rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
+        if not rlist or _cells(rlist[0]) != _MEAL_HEADER:
+            continue  # NOT the LeanLoop meal table — check the next table (never parse a user table)
+        out = []
+        for r in rlist[1:]:
+            v = _cells(r)
+            if len(v) >= 2 and v[1] == "รวม":
+                continue  # intentional total row
             try:
                 out.append([v[0], v[1], float(v[2]), float(v[3]), float(v[4]), float(v[5])])
-            except Exception:
-                pass
-        break
-    return out
+            except Exception as e:
+                raise RuntimeError(f"malformed meal row {v!r}: {e}")  # never silently drop a real meal
+        newest = out  # prefer the newest matching table
+    return newest
+
+
+_REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
 
 
 def foodlog_get(date: str = "") -> dict:
@@ -1047,11 +1258,17 @@ def foodlog_get(date: str = "") -> dict:
         rt = (p.get(k) or {}).get("rich_text") or []
         return "".join(t.get("plain_text", "") for t in rt) or None
 
-    return {"date": d, "day": _day_title(d), "page_id": row["id"],
+    base = {"date": d, "day": _day_title(d), "page_id": row["id"],
             "kcal": num("kcal"), "p": num("p"), "c": num("c"), "f": num("f"),
             "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
             "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
-            "meals": _parse_meals(row["id"])}
+            "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None)}
+    try:  # a failed meal read must NEVER look like "no meals" (would delete real meals on rewrite)
+        base["meals"] = _parse_meals(row["id"])
+    except Exception as e:
+        base["meals"] = None
+        base["error"] = f"meal-table-read-failed: {e}"
+    return base
 
 
 def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
@@ -1068,14 +1285,11 @@ def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
         {"property": "date", "date": {"on_or_before": e}},
     ]}, "page_size": 100}
     try:
-        try:
-            r = _notion("POST", f"/databases/{FOODLOG_DS}/query", flt, "2022-06-28")
-        except Exception:
-            r = _notion("POST", f"/data_sources/{FOODLOG_DS}/query", flt, "2025-09-03")
+        rows = _notion_query_all(FOODLOG_DS, flt.get("filter"))
     except Exception as ex:
         return {"error": str(ex)}
     out = []
-    for row in r.get("results", []):
+    for row in rows:
         p = row.get("properties", {})
 
         def num(k):
@@ -1092,7 +1306,8 @@ def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
                     "kcal": num("kcal"), "p": num("p"), "c": num("c"), "f": num("f"),
                     "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
                     "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
-                    "sync": (((p.get("sync") or {}).get("select")) or {}).get("name")})
+                    "sync": (((p.get("sync") or {}).get("select")) or {}).get("name"),
+                    "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None)})
     out.sort(key=lambda x: x["date"] or "")
     _cput(_ck, out, 21600 if e < _today else 30)
     _bump("foodlog_read", out)
@@ -1108,11 +1323,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                    meals: list | str | None = None,
                    meal_note: str | None = None) -> dict:
     """Create or update the Notion FoodLog row for a date (one row per day, exact match — never creates duplicates). Only provided fields are written; omitted fields stay unchanged.
-    meals: the FULL day's meals so far — either a native array or a JSON string, each element ["HH:MM","dish",kcal,p,c,f] (both accepted). The server rebuilds a clean meal table on the day page and recomputes kcal/p/c/f from it, so send the whole running list on every add/edit/remove.
+    meals: the FULL day's meals so far — either a native array or a JSON string, each element ["HH:MM","dish",kcal,p,c,f] (both accepted). The server rebuilds a clean meal table on the day page and recomputes kcal/p/c/f from it, so send the whole running list on every add/edit/remove. On a meal write the response echoes `meals` (the FULL saved day, sorted) + `totals` — ALWAYS render that whole table, never only the item just added.
     date=YYYY-MM-DD, default today."""
     d = day(date)
     parsed_meals = None
-    if meals:
+    if meals is not None:
         try:
             import json as _j
             data = _j.loads(meals) if isinstance(meals, str) else meals
@@ -1143,7 +1358,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             props[k] = {"number": v}
     if exercise_type is not None:
         props["exercise_type"] = {"rich_text": [{"text": {"content": exercise_type[:200]}}]}
-    if not props and not meal_note and not meals:
+    if not props and not meal_note and meals is None:
         return {"error": "no fields provided"}
     for _k in [k for k in list(_call_cache) if isinstance(k, tuple) and k and k[0] == "foodlog"]:
         _call_cache.pop(_k, None)
@@ -1168,13 +1383,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             note_err[0] = "meals parse failed (expect JSON [[time,item,kcal,p,c,f],...])"
         if parsed_meals is not None:
             try:
-                kids = _notion("GET", f"/blocks/{bid}/children?page_size=100", None, "2022-06-28")
-                for b in kids.get("results", []):
-                    try:
-                        _notion("DELETE", f"/blocks/{b['id']}", None, "2022-06-28")
-                    except Exception:
-                        pass
-                if parsed_meals:  # empty list = all meals removed → leave page blank
+                if parsed_meals:
                     rows = [[m[0], m[1], round(m[2]), round(m[3], 1), round(m[4], 1), round(m[5], 1)]
                             for m in parsed_meals]
                     tot = [round(sum(r[i] for r in rows), 1) for i in (2, 3, 4, 5)]
@@ -1185,10 +1394,11 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                                     int(m[4]) if m[4] == int(m[4]) else m[4],
                                     int(m[5]) if m[5] == int(m[5]) else m[5]]) for m in rows]
                     trows.append(_row(["", "รวม", tot[0], tot[1], tot[2], tot[3]], bold=True))
-                    _notion_write("PATCH", f"/blocks/{bid}/children",
-                                  {"children": [{"object": "block", "type": "table",
-                                                 "table": {"table_width": 6, "has_column_header": True,
-                                                           "has_row_header": False, "children": trows}}]})
+                    _replace_table(bid, {"object": "block", "type": "table",
+                                         "table": {"table_width": 6, "has_column_header": True,
+                                                   "has_row_header": False, "children": trows}}, header=_MEAL_HEADER)
+                else:  # empty list = all meals removed -> remove the meal table only
+                    _replace_table(bid, None, header=_MEAL_HEADER)
                 wrote.append("meals")
             except Exception as e:
                 note_err[0] = str(e)
@@ -1213,7 +1423,14 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             res = {"date": d, "status": "updated", "page_id": row["id"],
                    "wrote": _note(row["id"], list(props))}
             if note_err[0]:
-                res["meal_note_error"] = note_err[0]
+                if meals is not None:  # meal-TABLE write/clear failed — must be unmistakable, never a silent success
+                    res["status"] = "partial-failure"
+                    res["error"] = f"meal-table-write-failed: {note_err[0]}"
+                else:
+                    res["meal_note_error"] = note_err[0]
+            if parsed_meals is not None and "meals" in res["wrote"]:
+                res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
+                res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
             return res
         title = _day_title(d)
         full_props = {"day": {"title": [{"text": {"content": title}}]},
@@ -1230,10 +1447,208 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         res = {"date": d, "status": "created", "page_id": r.get("id"), "day": title,
                "wrote": _note(r.get("id"), list(props))}
         if note_err[0]:
-            res["meal_note_error"] = note_err[0]
+            if meals is not None:  # meal-TABLE write/clear failed — must be unmistakable, never a silent success
+                res["status"] = "partial-failure"
+                res["error"] = f"meal-table-write-failed: {note_err[0]}"
+            else:
+                res["meal_note_error"] = note_err[0]
+        if parsed_meals is not None and "meals" in res["wrote"]:
+            res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
+            res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
         return res
     except Exception as e:
         return {"error": str(e)}
+
+
+def _parse_lift_table(page_id):
+    """Read the lift table already on a TrainingLog page -> [[exercise, load, sets, reps], ...]."""
+    if not page_id:
+        return []
+    bid = page_id.replace("-", "")
+    try:
+        kids = _notion("GET", f"/blocks/{bid}/children?page_size=50", None, "2022-06-28")
+    except Exception as e:
+        raise RuntimeError(f"lift-page-read-failed: {e}")  # UNKNOWN != empty (blocks blind overwrite)
+    def _cells(r):
+        return ["".join(x.get("plain_text", "") for x in c).strip()
+                for c in r.get("table_row", {}).get("cells", [])]
+
+    def _n(x):
+        try:
+            return float(x)
+        except Exception:
+            return None  # lazy value ("-"/blank) is VALID, not malformed
+    newest = []
+    for b in kids.get("results", []):
+        if b.get("type") != "table":
+            continue
+        tid = b["id"].replace("-", "")
+        try:
+            rows = _notion("GET", f"/blocks/{tid}/children?page_size=100", None, "2022-06-28")
+        except Exception as e:
+            raise RuntimeError(f"lift-table-read-failed: {e}")  # can't prove it's NOT the lift table
+        rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
+        if not rlist or _cells(rlist[0]) != _LIFT_HEADER:
+            continue  # NOT the LeanLoop lift table
+        out = []
+        for r in rlist[1:]:
+            v = _cells(r)
+            if len(v) >= 2 and v[1] == "รวม volume":
+                continue  # intentional total row
+            if len(v) < 4:
+                raise RuntimeError(f"malformed lift row {v!r}")  # structurally broken -> never drop a lift
+            sr = v[2].split("×") if "×" in v[2] else [v[2], ""]
+            out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else "")])
+        newest = out  # prefer the newest matching lift table (append-first write may leave a stale dup)
+    return newest
+
+
+@mcp.tool()
+def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
+    """Log a weight-training session as a clean lift table on its TrainingLog day page.
+    Creates/updates ONE TrainingLog row (type=weights) for the date + session name, then rebuilds
+    the lift table from `lifts` = array of ["exercise", load_kg, sets, reps] (a JSON string is also
+    accepted). The server computes volume (load*sets*reps) and estimated 1RM per lift plus total
+    volume, so send the WHOLE session's lifts on every add/edit. date=YYYY-MM-DD, default today."""
+    d = day(date)
+    sess = (session or "Weights").strip()
+    def _lift(l):
+        l = list(l) + [None] * (4 - len(l))
+        def _n(x):
+            return None if x in (None, "") else float(x)
+        return [str(l[0]), _n(l[1]), _n(l[2]), _n(l[3])]  # load/sets/reps optional = lazy mode
+    lifts_given = lifts is not None
+    try:
+        import json as _j
+        data = _j.loads(lifts) if isinstance(lifts, str) else (lifts or [])
+        parsed = [_lift(l) for l in data]
+    except Exception:
+        return {"error": "lifts must be [[exercise, load_kg?, sets?, reps?], ...] (numbers optional = lazy)"}
+    if not parsed and not session:
+        return {"error": "give a session name and/or lifts"}
+    if not TRAINING_DS:
+        return {"error": "NOTION_TRAININGLOG_DS not set"}
+
+    row_id = page_id or None  # explicit page_id (from traininglog_read) = precise edit, no guessing
+    if not row_id:
+        flt = {"filter": {"and": [{"property": "date", "date": {"equals": d}},
+                                 {"property": "type", "select": {"equals": "weights"}}]}, "page_size": 50}
+        try:
+            try:
+                r = _notion("POST", f"/databases/{TRAINING_DS}/query", flt, "2022-06-28")
+            except Exception:
+                r = _notion("POST", f"/data_sources/{TRAINING_DS}/query", flt, "2025-09-03")
+            for row in r.get("results", []):
+                ti = "".join(x.get("plain_text", "") for x in ((row.get("properties", {}).get("session") or {}).get("title") or []))
+                if ti.strip().lower() == sess.lower():  # EXACT match — never clobber a different session
+                    row_id = row["id"]
+                    break
+        except Exception as e:
+            return {"error": f"query failed: {e}"}
+
+    total_vol = round(sum(l[1] * l[2] * l[3] for l in parsed if l[1] is not None and l[2] and l[3]))
+    props = {"session": {"title": [{"text": {"content": sess[:200]}}]},
+             "date": {"date": {"start": d}}, "type": {"select": {"name": "weights"}}}
+    if not row_id:
+        try:
+            try:
+                cr = _notion("POST", "/pages", {"parent": {"database_id": TRAINING_DS}, "properties": props}, "2022-06-28")
+            except Exception:
+                cr = _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": TRAINING_DS}, "properties": props}, "2025-09-03")
+            row_id = cr.get("id")
+        except Exception as e:
+            return {"error": f"create failed: {e}"}
+
+    def _cell(v, bold=False):
+        c = [{"type": "text", "text": {"content": str(v)[:200]}}]
+        if bold:
+            c[0]["annotations"] = {"bold": True}
+        return c
+    def _rowb(vals, bold=False):
+        return {"type": "table_row", "table_row": {"cells": [_cell(v, bold) for v in vals]}}
+    bid = (row_id or "").replace("-", "")
+    if not lifts_given:  # lifts=None -> leave the existing lift table untouched
+        return {"date": d, "session": sess, "page_id": row_id, "status": "session-row (lifts unchanged)"}
+    if not parsed:  # lifts=[] -> explicitly clear the lift table (mirror meals=[])
+        try:
+            _replace_table(bid, None, header=_LIFT_HEADER)
+        except Exception as e:
+            return {"date": d, "session": sess, "page_id": row_id,
+                    "status": "clear-failed", "error": str(e)[:120]}
+        return {"date": d, "session": sess, "page_id": row_id, "status": "lifts-cleared"}
+    try:
+        trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
+        for ex, load, sets, reps in parsed:
+            if load is not None and sets and reps:
+                e1 = round(load * (1 + reps / 30.0), 1)
+                e1 = int(e1) if e1 == int(e1) else e1
+                ld = int(load) if load == int(load) else load
+                trows.append(_rowb([ex, ld, f"{int(sets)}×{int(reps)}", round(load * sets * reps), e1]))
+            else:  # lazy row — logged without numbers
+                trows.append(_rowb([ex, "-", "-", "-", "-"]))
+        trows.append(_rowb(["", "รวม volume", "", total_vol, ""], bold=True))
+        _replace_table(bid, {"object": "block", "type": "table",
+                             "table": {"table_width": 5, "has_column_header": True,
+                                       "has_row_header": False, "children": trows}}, header=_LIFT_HEADER)
+    except Exception as e:
+        return {"date": d, "session": sess, "page_id": row_id, "status": "row-ok-table-failed",
+                "total_volume": total_vol, "error": str(e)}
+    return {"date": d, "session": sess, "page_id": row_id, "status": "saved",
+            "lifts": len(parsed), "total_volume": total_vol}
+
+
+
+@mcp.tool()
+def traininglog_read(date: str = "", end_date: str = "", type: str = "") -> list | dict:
+    """Read TrainingLog rows (what was actually DONE) — the read side missing until now. One date (default today)
+    or a range (end_date, inclusive). Optional `type` filter (run/tempo/threshold/interval/recovery-run/weights/
+    muay-thai/...). Each row returns session/type/distance_km/duration/pace/avg_hr/max_hr/zone4_5_pct/training_effect/
+    kcal_burn/coach_notes/body_signals, and for WEIGHT sessions the lift table on its page (`lifts`: [exercise,load,
+    sets,reps]) + `page_id`. Read this BEFORE editing a weight session (so no lift is lost — resend the full list or
+    pass page_id), and for strength progression, weekly volume-per-muscle, plan adherence, and any full training review."""
+    d = day(date)
+    e = day(end_date) if end_date else d
+    if not TRAINING_DS:
+        return {"error": "NOTION_TRAININGLOG_DS not set"}
+    flt = {"filter": {"and": [{"property": "date", "date": {"on_or_after": d}},
+                             {"property": "date", "date": {"on_or_before": e}}]}, "page_size": 100}
+    if type:
+        flt["filter"]["and"].append({"property": "type", "select": {"equals": type}})
+    try:
+        rows = _notion_query_all(TRAINING_DS, flt.get("filter"))
+    except Exception as ex:
+        return {"error": str(ex)}
+    out = []
+    for row in rows:
+        p = row.get("properties", {})
+
+        def num(k):
+            return (p.get(k) or {}).get("number")
+
+        def txt(k):
+            rt = (p.get(k) or {}).get("rich_text") or []
+            return "".join(t.get("plain_text", "") for t in rt) or None
+
+        def sel(k):
+            return (((p.get(k) or {}).get("select")) or {}).get("name")
+
+        ttl = (p.get("session") or {}).get("title") or []
+        rec = {"page_id": row["id"],
+               "date": ((p.get("date") or {}).get("date") or {}).get("start"),
+               "session": "".join(t.get("plain_text", "") for t in ttl) or None,
+               "type": sel("type"), "distance_km": num("distance_km"), "duration": txt("duration"),
+               "pace": txt("pace"), "avg_hr": num("avg_hr"), "max_hr": num("max_hr"),
+               "zone4_5_pct": num("zone4_5_pct"), "training_effect_aerobic": num("training_effect_aerobic"),
+               "kcal_burn_adjusted": num("kcal_burn_adjusted"),
+               "coach_notes": txt("coach_notes"), "body_signals": txt("body_signals")}
+        if sel("type") == "weights":
+            try:
+                rec["lifts"] = _parse_lift_table(row["id"])
+            except Exception as e:  # lift read UNKNOWN -> visible error, never a false "lifts=[]"
+                return {"error": f"lift-table-read-failed: {e}"}
+        out.append(rec)
+    out.sort(key=lambda x: (x["date"] or "", x["session"] or ""))
+    return out
 
 
 _WELLNESS = {"hrv": get_hrv, "stress": get_stress, "body_battery": get_body_battery,
@@ -1251,7 +1666,7 @@ _FITNESS_NODATE = {"race_predictions": get_race_predictions,
 
 @mcp.tool()
 def get_wellness(metric: str, date: str = "", full: bool = False) -> dict | list:
-    """One daily health metric. metric = sleep (last night: score/stages/HRV/RHR/body battery; full=true adds raw series) | hrv | stress | body_battery | heart_rate | spo2 | respiration | intensity_minutes | hydration | blood_pressure | body_composition | training_readiness | training_status. date=YYYY-MM-DD, default today."""
+    """One daily health metric. metric = sleep (last night: score/stages/HRV/RHR/body battery; full=true adds the expanded series (very large arrays may still be compacted)) | hrv | stress | body_battery | heart_rate | spo2 | respiration | intensity_minutes | hydration | blood_pressure | body_composition | training_readiness | training_status. date=YYYY-MM-DD, default today."""
     m = metric.strip().lower()
     if m == "sleep":
         return get_sleep(date, full)
@@ -1411,18 +1826,37 @@ def analyze_activity(activity_id: str = "") -> dict:
 
     def f(g):
         res = {}
+        # `meta` must stay the FLAT activity-list shape the whole analysis reads (typeKey/duration/
+        # startTimeLocal/averageHR...). `get_activity()` is NESTED (summaryDTO/activityTypeDTO), so it is
+        # used ONLY as `detail` to enrich subjective RPE/feel — never as canonical metadata.
         if activity_id:
-            meta = g.get_activity(activity_id) or {}
             aid = activity_id
+            detail = g.get_activity(aid) or {}
+            _sd = detail.get("summaryDTO") or {}
+            _day = str(detail.get("startTimeLocal") or _sd.get("startTimeLocal") or "")[:10]
+            meta = None
+            if _day:  # recover the flat list item for this activity
+                for _a in (g.get_activities_by_date(_day, _day) or []):
+                    if str(_a.get("activityId")) == str(aid):
+                        meta = _a; break
+            meta = meta or detail  # fallback: partial detail beats nothing
         else:
             latest = (g.get_activities(0, 1) or [{}])[0]
             aid = str(latest.get("activityId", ""))
-            meta = latest
+            meta = latest  # known-good flat metadata — do NOT swap for full detail
+            detail = (g.get_activity(aid) if aid else None) or {}
         if not aid:
             return {"error": "no activity found"}
         tkey = ((meta.get("activityType") or {}).get("typeKey")) or ""
         res["session"] = {k: meta.get(k) for k in _ACT_KEEP if meta.get(k) is not None}
         res["session"]["typeKey"] = tkey
+        _sum = detail.get("summaryDTO") or {}
+        for _k in ("directWorkoutRpe", "directWorkoutFeel"):  # subjective — tolerant of nesting, only if present, never fabricated
+            _v = detail.get(_k)
+            if _v is None:
+                _v = _sum.get(_k)
+            if _v is not None:
+                res["session"][_k] = _v
         start_local = str(meta.get("startTimeLocal") or "")[:10]
         try:
             laps = (g.get_activity_splits(aid) or {}).get("lapDTOs") or []
@@ -1526,8 +1960,12 @@ def analyze_activity(activity_id: str = "") -> dict:
         try:
             stime = start_full[11:16]
             dayrow = foodlog_get(sdate)
-            meals = dayrow.get("meals") or [] if isinstance(dayrow, dict) else []
-            if stime:
+            if isinstance(dayrow, dict) and dayrow.get("error"):
+                r["pre_workout_fuel_error"] = dayrow["error"]  # FoodLog read FAILED -> UNKNOWN, never infer fasted
+                meals = None
+            else:
+                meals = dayrow.get("meals") or [] if isinstance(dayrow, dict) else []
+            if stime and meals is not None:
                 start_min = int(stime[:2]) * 60 + int(stime[3:5])
                 pre = []
                 for m in meals:
@@ -1562,14 +2000,11 @@ def _body_scans():
     if not BODYMETRICS_DS:
         return []
     try:
-        try:
-            r = _notion("POST", f"/databases/{BODYMETRICS_DS}/query", {"page_size": 100}, "2022-06-28")
-        except Exception:
-            r = _notion("POST", f"/data_sources/{BODYMETRICS_DS}/query", {"page_size": 100}, "2025-09-03")
+        rows = _notion_query_all(BODYMETRICS_DS)
     except Exception:
         return []
     out = []
-    for row in r.get("results", []):
+    for row in rows:
         p = row.get("properties", {})
 
         def num(k):
@@ -1596,9 +2031,10 @@ def calibrate_report(days: int = 14) -> dict:
         rows = foodlog_get_range(s, e)
         if isinstance(rows, dict):
             return None, None, None
-        logged = [r for r in rows if r.get("kcal") is not None]
+        # coverage for CALIBRATION = days that actually have a usable deficit_actual (a kcal-only day
+        # with no TDEE contributes 0 to the sum, so it must not count as covered).
         defs = [r.get("deficit_actual") for r in rows if r.get("deficit_actual") is not None]
-        return round(sum(defs)), len(logged), rows
+        return round(sum(defs)), len(defs), rows
 
     # --- Preferred: InBody/body-scan fat-mass calibration (same source, latest pair) ---
     scans = _body_scans()
@@ -1617,7 +2053,10 @@ def calibrate_report(days: int = 14) -> dict:
         if prior:
             s0, s1 = prior["date"], latest["date"]
             span = max(1, (_d.fromisoformat(s1) - _d.fromisoformat(s0)).days)
-            cum, nlog, _ = _cum_deficit(s0, s1)
+            # a morning-fasted scan on s1 reflects energy balance THROUGH the day before s1
+            # (s1's own food/TDEE happens after the scan) — exclude s1 from the deficit window.
+            e_def = (_d.fromisoformat(s1) - _td(days=1)).isoformat()
+            cum, nlog, _ = _cum_deficit(s0, e_def)
             if cum is not None:
                 need = max(1, round(span * 0.8))
                 pred_fat = round(-cum / 7700, 2)
@@ -1632,7 +2071,7 @@ def calibrate_report(days: int = 14) -> dict:
                        "visceral_change": (round(latest["visceral"] - prior["visceral"], 1)
                                            if latest.get("visceral") is not None and prior.get("visceral") is not None else None),
                        "window": f"{s0}..{s1}", "span_days": span,
-                       "days_logged": nlog, "days_required": need,
+                       "days_with_deficit": nlog, "days_required": need,
                        "coverage_ok": nlog >= need,
                        "cumulative_deficit_kcal": cum,
                        "predicted_fat_loss_kg": pred_fat,
@@ -1653,7 +2092,7 @@ def calibrate_report(days: int = 14) -> dict:
         return {"error": "could not read FoodLog"}
     out = {"method": "scale weigh-ins — approximate (weight includes water/glycogen; use an InBody scan for a reliable read)",
            "window": f"{start}..{end}",
-           "days_logged": nlog, "days_required": max(1, round(days * 0.8)),
+           "days_with_deficit": nlog, "days_required": max(1, round(days * 0.8)),
            "coverage_ok": nlog >= round(days * 0.8),
            "cumulative_deficit_kcal": cum,
            "expected_weight_change_kg": round(-cum / 7700, 2)}
@@ -1755,10 +2194,66 @@ def foodlib_find(query: str) -> list | dict:
     return out
 
 
+@mcp.tool()
+def exercise_find(query: str) -> list | dict:
+    """Search the user's ExerciseLib by exercise/machine name (contains match, max 10). Returns the
+    canonical name + muscle_group + default_load + notes, so a loose spoken name ("เครื่องดันอก")
+    resolves to a known exercise and its muscle group when logging weights. Empty list = not saved yet."""
+    ds = os.environ.get("NOTION_EXERCISELIB_DS", "")
+    if not ds:
+        return {"error": "NOTION_EXERCISELIB_DS is not set on this server — search ExerciseLib via the Notion connector instead."}
+    q = query.strip()
+    ck = ("exlib", q.lower())
+    c = _cget(ck)
+    if c is not None:
+        _bump("exercise_find", c)[2] += 1
+        return c
+
+    def _q(term):
+        flt = {"filter": {"property": "name", "title": {"contains": term}}, "page_size": 10}
+        try:
+            try:
+                return _notion("POST", f"/databases/{ds}/query", flt, "2022-06-28")
+            except Exception:
+                return _notion("POST", f"/data_sources/{ds}/query", flt, "2025-09-03")
+        except Exception:
+            return None
+    r = _q(q)
+    if r is None:
+        return {"error": "ExerciseLib query failed"}
+    if not r.get("results"):
+        for w in sorted((w for w in q.split() if len(w) >= 3), key=len, reverse=True):
+            rr = _q(w)
+            if rr and rr.get("results"):
+                r = rr
+                break
+    out = []
+    for row in r.get("results", []):
+        p = row.get("properties", {})
+
+        def num(k):
+            return (p.get(k) or {}).get("number")
+
+        def txt(k):
+            rt = (p.get(k) or {}).get("rich_text") or []
+            return "".join(t.get("plain_text", "") for t in rt) or None
+
+        def sel(k):
+            return (((p.get(k) or {}).get("select")) or {}).get("name")
+
+        title = (p.get("name") or {}).get("title") or []
+        out.append({"name": "".join(t.get("plain_text", "") for t in title),
+                    "muscle_group": sel("muscle_group"), "default_load": num("default_load"),
+                    "notes": txt("notes")})
+    _cput(ck, out, 600)
+    _bump("exercise_find", out)
+    return out
+
+
 _playbook_cache = {"text": "", "ts": 0.0}
 
 
-_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "coach me today", "progress check", "coaching brain")
+_PB_ONDEMAND = ("post-workout", "weekly summary", "body scans", "alcohol", "injury", "exercise", "weight training", "training plan", "personal baselines", "coach me today", "progress check", "coaching brain")
 
 
 def _pb_fetch():
@@ -1782,7 +2277,7 @@ def _pb_fetch():
 
 @mcp.tool()
 def get_playbook(section: str = "") -> str:
-    """The latest coaching rules. Call once (no args) at the start of any food/training/coaching conversation: returns the core rules plus a list of on-demand sections. The moment an on-demand topic comes up, call again with section="<name>" to get those rules."""
+    """The latest coaching rules. Call once (no args) at the start of any food/training/coaching conversation: returns the core rules plus a list of on-demand sections. The moment on-demand topics come up, call again with section="<name>" (or several at once: section="post-workout, coaching brain") to get those rules in one call."""
     text = _pb_fetch()
     if "\n## " not in text:
         return text
@@ -1792,11 +2287,17 @@ def get_playbook(section: str = "") -> str:
         h, _, b = pt.partition("\n")
         secs.append((h.strip(), b))
     if section:
-        q = section.lower()
-        for h, b in secs:
-            if q in h.lower():
-                return f"## {h}\n{b}"
-        return "Section not found. Available: " + " | ".join(h for h, _ in secs)
+        # accept ONE or MANY sections (comma-separated) in a single call — fewer round-trips
+        wanted = [x.strip().lower() for x in section.split(",") if x.strip()]
+        out = []
+        for w in wanted:
+            for h, b in secs:
+                if w in h.lower():
+                    out.append(f"## {h}\n{b}")
+                    break
+        if out:
+            return "\n\n".join(out)
+        return "Section(s) not found. Available: " + " | ".join(h for h, _ in secs)
     core = [head]
     skipped = []
     for h, b in secs:
@@ -1810,7 +2311,9 @@ def get_playbook(section: str = "") -> str:
 
 
 # ---- HTTP wiring -----------------------------------------------------------
-SECRET = os.environ.get("MCP_SECRET", "dev")
+SECRET = os.environ.get("MCP_SECRET")
+if not SECRET:
+    raise RuntimeError("MCP_SECRET must be set — refusing to start with a default secret")
 
 import contextlib
 
