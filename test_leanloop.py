@@ -431,5 +431,32 @@ ok("foodlog_upsert returns FULL saved table (sorted) + totals",
    isinstance(_r.get("meals"),list) and len(_r["meals"])==2 and _r["meals"][0][0]=="08:00"
    and _r.get("totals",{}).get("kcal")==660)
 
+# ================= FoodLib dedup + smart search =================
+os.environ["NOTION_FOODLIB_DS"]="flib"
+FL=[{"id":"f1","properties":{"name":{"title":[{"plain_text":"Proten Duo ชาไทย 350ml"}]},"kcal":{"number":190},"p":{"number":35}}},
+    {"id":"f2","properties":{"name":{"title":[{"plain_text":"ไข่ต้ม 1 ฟอง"}]},"kcal":{"number":70}}}]
+def _fln(m,p,pl,v):
+    if "query" in p: return {"results":FL,"has_more":False}
+    if p=="/pages": return {"id":"newf"}
+    return {"results":[]}
+main._notion=_fln; main._notion_write=lambda m,p,pl:{"id":"x"}
+main._call_cache.clear()
+_r=main.foodlib_find("proten")
+ok("foodlib_find case-insensitive finds 'Proten' + page_id", bool(_r) and _r[0].get("page_id")=="f1")
+main._call_cache.clear()
+ok("foodlib_find thai contains match", (lambda r: bool(r) and r[0]["name"].startswith("ไข่ต้ม"))(main.foodlib_find("ไข่ต้ม")))
+main._call_cache.clear()
+_r=main.foodlib_upsert(name="Proten Duo ชาไทย 350ml", c=9)
+ok("foodlib_upsert exact name = UPDATE (no dup)", _r["status"]=="updated" and _r["page_id"]=="f1")
+main._call_cache.clear()
+_r=main.foodlib_upsert(name="Totally New Snack 50g", kcal=100)
+ok("foodlib_upsert new name = create", _r["status"]=="created" and _r["page_id"]=="newf")
+main._call_cache.clear()
+_r=main.foodlib_upsert(name="Proten Duo ชาไทย", kcal=190)
+ok("foodlib_upsert flags similar_existing (near-dup nudge)", _r["status"]=="created" and "similar_existing" in _r and any("350ml" in s for s in _r["similar_existing"]))
+main._call_cache.clear()
+_r=main.foodlib_upsert(name="Anything", page_id="f2", kcal=75)
+ok("foodlib_upsert page_id = precise update", _r["status"]=="updated" and _r["page_id"]=="f2")
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

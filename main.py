@@ -2142,40 +2142,14 @@ def get_config() -> str:
     return out
 
 
-@mcp.tool()
-def foodlib_find(query: str) -> list | dict:
-    """Search the user's FoodLib by dish name (contains match, max 10). Returns stored serving/kcal/macros to reuse for repeated dishes — much faster than searching via the Notion connector. Empty list = not in the library."""
+def _foodlib_all():
+    """All FoodLib entries (small table) as dicts incl. page_id — for smart in-code matching + dedup."""
     ds = os.environ.get("NOTION_FOODLIB_DS", "")
     if not ds:
-        return {"error": "NOTION_FOODLIB_DS is not set on this server — search FoodLib via the Notion connector instead."}
-    q = query.strip()
-    ck = ("foodlib", q.lower())
-    c = _cget(ck)
-    if c is not None:
-        _bump("foodlib_find", c)[2] += 1
-        return c
-    def _q(term):
-        flt = {"filter": {"property": "name", "title": {"contains": term}}, "page_size": 10}
-        try:
-            try:
-                return _notion("POST", f"/databases/{ds}/query", flt, "2022-06-28")
-            except Exception:
-                return _notion("POST", f"/data_sources/{ds}/query", flt, "2025-09-03")
-        except Exception:
-            return None
-    r = _q(q)
-    if r is None:
-        return {"error": "FoodLib query failed"}
-    if not r.get("results"):
-        # keyword fallback: try the core words (longest first) so
-        # "ข้าวมันไก่ ร้านเจ๊ 1 จาน" still finds "ข้าวมันไก่ — เจ๊กี"
-        for w in sorted((w for w in q.split() if len(w) >= 3), key=len, reverse=True):
-            rr = _q(w)
-            if rr and rr.get("results"):
-                r = rr
-                break
+        return None
+    rows = _notion_query_all(ds)
     out = []
-    for row in r.get("results", []):
+    for row in rows:
         p = row.get("properties", {})
 
         def num(k):
@@ -2186,12 +2160,121 @@ def foodlib_find(query: str) -> list | dict:
             return "".join(t.get("plain_text", "") for t in rt) or None
 
         title = (p.get("name") or {}).get("title") or []
-        out.append({"name": "".join(t.get("plain_text", "") for t in title),
+        out.append({"page_id": row["id"],
+                    "name": "".join(t.get("plain_text", "") for t in title),
                     "serving": txt("serving"), "kcal": num("kcal"), "p": num("p"),
                     "c": num("c"), "f": num("f"), "notes": txt("notes")})
+    return out
+
+
+def _fl_tokens(s):
+    for ch in ("\u2014", "-", "/", "(", ")", ","):
+        s = s.replace(ch, " ")
+    return [t for t in s.lower().split() if len(t) >= 2]
+
+
+def _fl_score(name, ql, qtokens):
+    n = (name or "").lower()
+    if n == ql:
+        return 100
+    s = 0
+    if ql and ql in n:
+        s += 50
+    if n and n in ql:
+        s += 40
+    for t in qtokens:
+        if t in n:
+            s += 10
+    return s
+
+
+@mcp.tool()
+def foodlib_find(query: str) -> list | dict:
+    """Search the user's FoodLib (personal food database) — smart, case-insensitive, cross-language
+    ranked match (exact > contains > shared words), max 10, each with its `page_id`. Returns stored
+    serving/kcal/macros to reuse for a repeated food. ALWAYS call this before saving a food, then pass
+    the matched `page_id` to `foodlib_upsert` to UPDATE it instead of creating a duplicate. Empty list =
+    not in the library yet."""
+    ds = os.environ.get("NOTION_FOODLIB_DS", "")
+    if not ds:
+        return {"error": "NOTION_FOODLIB_DS is not set on this server — search FoodLib via the Notion connector instead."}
+    q = (query or "").strip()
+    ql = q.lower()
+    ck = ("foodlib", ql)
+    c = _cget(ck)
+    if c is not None:
+        _bump("foodlib_find", c)[2] += 1
+        return c
+    try:
+        allf = _foodlib_all()
+    except Exception:
+        return {"error": "FoodLib query failed"}
+    if allf is None:
+        return {"error": "NOTION_FOODLIB_DS is not set on this server — search FoodLib via the Notion connector instead."}
+    qtokens = _fl_tokens(q)
+    scored = sorted(((e, _fl_score(e["name"], ql, qtokens)) for e in allf), key=lambda x: x[1], reverse=True)
+    out = [dict(e) for e, sc in scored if sc > 0][:10]
     _cput(ck, out, 600)
     _bump("foodlib_find", out)
     return out
+
+
+@mcp.tool()
+def foodlib_upsert(name: str, kcal: float | None = None, p: float | None = None,
+                   c: float | None = None, f: float | None = None,
+                   serving: str = "", notes: str = "", page_id: str = "") -> dict:
+    """Add or UPDATE a FoodLib entry, deduped by name so the library never gets duplicate foods. Pass
+    `page_id` (from foodlib_find) to update a specific entry precisely; otherwise the server matches an
+    existing entry by EXACT name (case-insensitive) and updates it, or creates a new one if none exists.
+    Naming standard: '<brand> <product> <size>' for packaged, '<dish> \u2014 <place/\u0e17\u0e31\u0e48\u0e27\u0e44\u0e1b>' for dishes (core
+    name first so search finds it). Only provided fields are written. On CREATE the response includes
+    `similar_existing` (near-name matches) so you can reuse one instead of duplicating."""
+    ds = os.environ.get("NOTION_FOODLIB_DS", "")
+    if not ds:
+        return {"error": "NOTION_FOODLIB_DS is not set on this server"}
+    name = (name or "").strip()
+    if not name:
+        return {"error": "name required"}
+    props = {"name": {"title": [{"text": {"content": name[:200]}}]}}
+    for k, v in (("kcal", kcal), ("p", p), ("c", c), ("f", f)):
+        if v is not None:
+            props[k] = {"number": v}
+    if serving:
+        props["serving"] = {"rich_text": [{"text": {"content": serving[:300]}}]}
+    if notes:
+        props["notes"] = {"rich_text": [{"text": {"content": notes[:1500]}}]}
+    try:
+        allf = _foodlib_all() or []
+    except Exception as e:
+        return {"error": f"FoodLib read failed: {e}"}
+    nl = name.lower()
+    target = page_id or None
+    similar = []
+    if not target:
+        for e in allf:
+            if (e["name"] or "").strip().lower() == nl:
+                target = e["page_id"]
+                break
+        similar = [e["name"] for e in allf
+                   if e["page_id"] != target and e["name"]
+                   and (nl in e["name"].lower() or e["name"].lower() in nl)][:5]
+    try:
+        if target:
+            _notion_write("PATCH", "/pages/" + target, {"properties": props})
+            res = {"status": "updated", "name": name, "page_id": target}
+        else:
+            try:
+                r = _notion("POST", "/pages", {"parent": {"database_id": ds}, "properties": props}, "2022-06-28")
+            except Exception:
+                r = _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": ds}, "properties": props}, "2025-09-03")
+            res = {"status": "created", "name": name, "page_id": r.get("id")}
+            if similar:
+                res["similar_existing"] = similar
+    except Exception as e:
+        return {"error": str(e)}
+    for _k in [k for k in list(_call_cache) if isinstance(k, tuple) and k and k[0] == "foodlib"]:
+        _call_cache.pop(_k, None)
+    return res
 
 
 @mcp.tool()
