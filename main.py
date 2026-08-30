@@ -2001,8 +2001,8 @@ def _body_scans():
         return []
     try:
         rows = _notion_query_all(BODYMETRICS_DS)
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"bodymetrics-read-failed: {e}")
     out = []
     for row in rows:
         p = row.get("properties", {})
@@ -2037,7 +2037,10 @@ def calibrate_report(days: int = 14) -> dict:
         return round(sum(defs)), len(defs), rows
 
     # --- Preferred: InBody/body-scan fat-mass calibration (same source, latest pair) ---
-    scans = _body_scans()
+    try:
+        scans = _body_scans()
+    except Exception as e:
+        return {"error": str(e), "note": "body-scan read failed — cannot calibrate from InBody; not falling back silently (READ unknown != empty)"}
 
     def _clean(s):
         # untagged (old scans) or morning-fasted = trustworthy for a trend line

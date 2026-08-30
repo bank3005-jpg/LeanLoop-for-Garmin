@@ -218,6 +218,12 @@ main._body_scans=lambda:[
 _r=main.calibrate_report()
 ok("P1-3 scan-pair deficit window excludes s1 (off-by-one)", _r.get("span_days")==14 and bool(_rng) and _rng[-1]==("2026-08-01","2026-08-14"))
 
+# ---- F2: body-scan read failure must fail-visible (READ unknown != empty) ----
+def _bs_fail(): raise RuntimeError("bodymetrics down")
+main._body_scans=_bs_fail
+_r=main.calibrate_report()
+ok("F2 body-scan read failure -> error surfaced (no silent scale fallback)", isinstance(_r,dict) and "error" in _r)
+
 # ---- P1-4A: analyze_activity.session carries RPE/feel when present ----
 main.call=_orig_call; main._call_cache.clear()
 class _GA:
