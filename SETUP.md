@@ -17,7 +17,8 @@ Collect and compute:
 3. Garmin watch model (must sync to Garmin Connect) · does the account have 2FA/MFA? · **Garmin China accounts are not supported** (separate system)
 4. Computer OS: Windows or macOS (needed in Phase 3)
 5. Program start date (today is fine) → this becomes `D1_DATE`
-6. Compute and confirm with the user: BMR (Mifflin-St Jeor), baseline TDEE (BMR × activity factor 1.2–1.4), targets: kcal range, protein 1.6–2.2 g/kg, fat ≥0.8 g/kg, carbs = remainder (3 tiers: heavy/medium/light for carb cycling), deficit target if cutting (300–600).
+6. Compute and confirm with the user, using the **flat-daily-kcal** model the live playbook expects: BMR (Mifflin-St Jeor) → baseline TDEE (BMR × activity factor 1.2–1.4) → **`kcal_daily`** = one flat number ≈ their average-week TDEE minus a chosen deficit (300–600 if cutting) · **`burn_baked_in`** = the average day's exercise kcal already inside that number · protein 1.6–2.2 g/kg · fat ≥0.8 g/kg · carbs = remainder in 3 tiers (heavy/medium/light) · **`deficit_cap`** · **`kcal_floor`** = their BMR. (Full field-by-field guide: **CONFIG-REFERENCE.md**.)
+7. Their weekly training availability + rough split (which days they can train, run vs lift) → seeds the **`PLAN`** line (weekday → session). A simple starter is fine; it's edited later.
 
 
 ## Phase 1 — Prerequisites (human checks)
@@ -40,14 +41,18 @@ Create a parent page `HealthTracker`, then these databases under it. Record ever
 - **LessonsArchive** — plain page (estimation corrections get appended here)
 > ⚠️ **Never rename these database property names later** (e.g. `kcal` → `calories`). The server reads them by exact name; renaming silently breaks logging.
 
-- **Config** — plain page (record its **page ID** — needed for `CONFIG_PAGE_ID` in Phase 4), fill from the Phase 0 interview:
+- **Config** — plain page (record its **page ID** — needed for `CONFIG_PAGE_ID` in Phase 4), fill from the Phase 0 interview. **This is the coach's brain — see [CONFIG-REFERENCE.md](CONFIG-REFERENCE.md) for the full field-by-field guide.** Use the current **flat-daily-kcal** structure (it must match the live playbook, which reads `kcal_daily` / `burn_baked_in`):
 
 ```
-PROFILE|h={{H}}|w={{W}}|age={{AGE}}|sex={{SEX}}|bmr={{BMR}}|updated={{DATE}}
-GOAL|kcal={{RANGE}}|p={{P}}g|c=carb_cycle_FUEL_FOR_TOMORROW(heavy={{CH}},medium={{CM}},light={{CL}})|f={{F}}g|deficit_target={{DEF}}
-TDEE|baseline={{TDEE}}(bmr×{{FACTOR}})|training_day=baseline+adjusted_burn
-CALIBRATION|bias_kcal_per_day=not_measured|last_calibrated=—
+CONFIG v1 ({{DATE}}) — current personal values (coach reads via get_config); rules live in playbook.md
+PROFILE|h={{H}}|w={{W}}|age={{AGE}}|sex={{SEX}}|bmr={{BMR}}|updated={{DATE}}|cuisine={{CUISINE}}
+PHASE|current={{cut/recomp/bulk/maintain}}|goal={{GOAL}}|training=see PLAN below|next_inbody=~2 weeks
+GOAL_ACTIVE|kcal_daily={{KCAL}} (ONE flat number every day incl rest)|burn_baked_in={{BURN}} (avg exercise kcal baked into kcal_daily)|topup=if a day's real exercise_burn exceeds burn_baked_in, add back HALF the excess|deficit_cap={{CAP}}|kcal_floor={{BMR}}|p={{P}}g|c=carb_cycle FUEL_FOR_TOMORROW (heavy={{CH}},medium={{CM}},light={{CL}})|f={{F}}g|updated={{DATE}}
+TDEE|baseline={{TDEE}}(bmr×{{FACTOR}}, no-watch days only)|closeday=real Garmin totalKilocalories
+CALIBRATION|bias_kcal_per_day=not_measured|last_calibrated=—|note=prefer morning-fasted InBody fat-mass
 COMMON|(labeled products the user eats often — add over time)
+ATHLETE|(durable coaching notes about the user — filled over time)
+PLAN|block=starter|Mon={{...}}|Tue={{...}}|Wed={{...}}|Thu={{...}}|Fri={{...}}|Sat={{...}}|Sun=rest|cue=(form/pace notes)
 ```
 
 Then the human creates a Notion integration: [notion.so/my-integrations](https://www.notion.so/my-integrations) → New integration → copy the **Internal Integration Secret** (starts `ntn_`, ~50 chars — NOT any shorter ID) → open the `HealthTracker` page → ⋯ menu → **Connections** → add the integration.
