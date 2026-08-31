@@ -51,7 +51,7 @@ Claude interviews you (goals, body stats), creates your Notion databases, walks 
 
 **Prerequisites:** a Garmin watch · Notion account (free) · Google account with billing enabled (stays within free tier) · **Claude Pro** (or Max/Team — needs two custom connectors at once; Free allows only one) · Windows or macOS computer for one step.
 
-> 📖 **Installed and not sure what to do next? → [USAGE.md — how to actually use it, what to say to your coach, and what it can do](USAGE.md)**
+> 📚 **Docs:** [USAGE.md](USAGE.md) — how to use it (what to say to your coach) · [SETUP.md](SETUP.md) — install · [CONFIG-REFERENCE.md](CONFIG-REFERENCE.md) — the Config "brain" · [SECURITY.md](SECURITY.md) — keep your data safe
 
 ## 🏗️ Architecture
 

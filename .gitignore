@@ -1,6 +1,21 @@
+# ── Secrets created during setup — NEVER commit ──
+token.txt
+secret.txt
+env.yaml
+.env
+*.env
+GARMINTOKENS*
+tokens.json
+
+# ── Python ──
 __pycache__/
 *.pyc
-token.txt
-env.yaml
-secret.txt
-.env
+.venv/
+venv/
+
+# ── OS / editor ──
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
