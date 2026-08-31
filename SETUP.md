@@ -114,6 +114,11 @@ vals = {
   "TDEE_BASELINE": "{{BASELINE_TDEE_FROM_PHASE_0}}",
   "PROGRESS_PAGE_ID": "{{HEALTHTRACKER_PAGE_ID}}",
   "TZ_NAME": "{{TIMEZONE}}",
+  # Optional — fill BOTH to enable automatic Garmin re-login if the token ever fails
+  # (stored only in your Cloud Run env). Or DELETE these two lines to skip and just
+  # regenerate the token yearly (Phase 3). /health does not require them.
+  "GARMIN_EMAIL": "{{GARMIN_EMAIL}}",
+  "GARMIN_PASSWORD": "{{GARMIN_PASSWORD}}",
 }
 open('env.yaml','w').write("".join(f"{k}: {json.dumps(v)}\n" for k,v in vals.items()))
 print('env.yaml OK')
