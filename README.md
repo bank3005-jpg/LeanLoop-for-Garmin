@@ -64,12 +64,12 @@ Claude (any device, incl. phone)
 
 **Privacy by design:** everything runs in *your* accounts. No third party — including this repo's author — ever sees your data. The server is protected by a long random secret; Garmin credentials never pass through chat.
 
-## 🧰 What's inside (19 lean MCP tools)
+## 🧰 What's inside (20 lean MCP tools)
 
 **Health** `get_wellness(metric)` — sleep, HRV, stress, body battery, heart rate, SpO2, respiration, intensity minutes, hydration, blood pressure, body composition, training readiness/status · `get_daily_summary`
 **Training** `get_activities` (recent or date range) · `get_activity(id, view)` — summary, splits, HR zones, FIT streams, aerobic decoupling · `get_fitness(metric)` — VO2max, race predictions, endurance/hill scores, lactate threshold, PRs, fitness age · `get_coach_snapshot` (one-call verdict data) · `analyze_activity` (one-call post-workout bundle) · `weekly_report` / `calibrate_report` (pre-computed reviews) · `traininglog_read` (Notion actuals: runs + weight lift tables)
 **Body** `get_weight_history` · `add_body_composition` (**write** InBody/DEXA scans into Garmin)
-**System** `foodlog_read` / `foodlog_upsert` (direct Notion food log, meal-by-meal history) · `get_config` / `foodlib_find` / `exercise_find` (fast server-side Notion reads) · `weightlog_upsert` (log a lift session) · `get_playbook` (live coaching rules)
+**System** `foodlog_read` / `foodlog_upsert` (direct Notion food log, meal-by-meal history) · `get_config` / `foodlib_find` / `foodlib_upsert` / `exercise_find` (fast server-side Notion reads, dedup foods into your library) · `weightlog_upsert` (log a lift session) · `get_playbook` (live coaching rules)
 
 Few tools by design: a lean tool list keeps every chat's context small — grouped tools with a `metric`/`view` parameter carry the same 35 capabilities at ~half the token overhead.
 
@@ -78,6 +78,29 @@ Few tools by design: a lean tool list keeps every chat's context small — group
 - **Coaching rules** — update automatically (served live from this repo)
 - **Server code** — `git pull` + one deploy command, or enable a Cloud Build trigger on `stable` for fully automatic deploys
 - Want to customize the code? **Fork** the repo and point your deployment at your fork
+
+## 🤖 Using it with ChatGPT or OpenAI Codex (instead of Claude)
+
+LeanLoop's brain is a **standard remote MCP server** — it is *not* tied to Claude. Any MCP-capable client can connect to the exact same Cloud Run server and get the same 20 tools. Two confirmed paths (verified Aug 2026):
+
+**ChatGPT — Developer Mode** (Plus / Pro / Business / Enterprise / Edu, web app):
+`Settings → Apps → Advanced → Developer Mode` → **add a remote MCP server** → paste your server URL (`https://<your-cloud-run-url>/<MCP_SECRET>/mcp`). ChatGPT supports Streamable HTTP + SSE with *OAuth-or-none*, so the secret-in-URL that LeanLoop already uses works as-is. Put the bootstrap (below) into a **Custom GPT**'s instructions.
+
+**OpenAI Codex** (CLI or desktop):
+`codex mcp add leanloop -- <streamable-http url>`, or add it to `~/.codex/config.toml` (a project-scoped `.codex/config.toml` also works). Codex supports remote **Streamable HTTP** MCP with bearer/none auth. Put the bootstrap into `AGENTS.md` / project config.
+
+**Bootstrap** (the equivalent of the Claude-Project setup — paste into the Custom GPT instructions / AGENTS.md):
+> *At the start of any food / training / coaching conversation, call `get_playbook` (no args) and follow every rule it returns, and read `get_config` for the user's current targets. All coaching logic lives in those two tools — never guess.*
+
+**What ports 1:1 (zero changes):** the whole server, all 20 tools, your Garmin token, your Notion databases, the Cloud Run deployment, and the nightly cron. These are **model-agnostic** — build them once, any AI uses them.
+
+**What's different / to watch:**
+- **You likely need only the ONE LeanLoop connector**, not a separate Notion one — the server reads *and writes* your food / config / training logs in Notion **itself** (server-side, via its own token). A separate Notion MCP is only needed for occasional hand-editing of page structure.
+- **The playbook is tuned to Claude's behaviour.** GPT models follow instructions a little differently — expect to tweak some wording (e.g. the "always render the full food table" rules) until it behaves.
+- **Photo food-logging** needs a client with vision — ChatGPT has it.
+- **Codex-only shortcut that skips Google Cloud:** because Codex runs code locally, you *can* run `main.py` as a **local stdio MCP server** (no Cloud Run at all) — this removes the single hardest setup step. Trade-offs: no nightly auto-close cron (that needs an always-on host) and no phone access — it only works while your computer + Codex are running. Great for trying it; Cloud Run is still better for daily hands-off use.
+
+**Bottom line — fully feasible.** The three genuinely fiddly one-time steps people worry about — **Notion setup, Garmin token, cloud deploy** — are *identical* on any platform, because they connect **your data**, not Claude specifically. Once they're done, pointing ChatGPT or Codex at the server is a ~2-minute config. The one-time steps are in [`SETUP.md`](SETUP.md). *(Community/experimental — the maintainer builds on Claude; GPT/Codex paths may need small prompt tweaks.)*
 
 ## ❓ FAQ
 
