@@ -41,6 +41,7 @@ Every time, it shows your **whole day as a table** (meals + total + your target)
 ### 🏋️ Weight training (log + progressive overload)
 - **Before you lift:** "what's today's Push? how much weight?" / "วันนี้ Push เล่นอะไร นน เท่าไร" → it reads your **last** Push session and gives each exercise + the weight to try this time (a bit more if you hit your reps last time).
 - **Log it** (set-by-set or all at once): "bench 60 4x8, shoulder 40 3x10" / "เบนช์ 60 4เซ็ต8, ไหล่ 40 3เซ็ต10" · or lazy: "push day, chest+shoulders, felt strong" (no numbers needed)
+- **Tell it your effort (RIR)** when it matters — "bench 60 4x8, last set RIR2" (~2 reps left in the tank; 0 = to failure). It stores RIR in the table and uses it to decide when to add weight (clean at RIR ≥2 → go up; near failure or form broke → hold).
 - **Mid-session:** "done with squats — what's next?" / "สควอทเสร็จ ต่อท่าไหน"
 - 💡 Log the **actual kg** on your main lifts — that's what lets progression work.
 

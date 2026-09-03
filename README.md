@@ -31,6 +31,7 @@ Because all of it already flows to Claude, there's **no more screenshotting dash
 | 🌙 | **Automatic day close** | Every night your server pulls the finished day's true TDEE from Garmin and writes TDEE + workouts into your log (your deficit column recalculates itself instantly — it's a Notion formula) — self-heals 3 days back, colored sync tags show status at a glance |
 | 🔥 | **Progress you can see** | Cumulative deficit (≈ kg of fat) updated nightly right on your Notion food log |
 | 🏃 | **Coaching on real data** | One-call readiness verdicts, post-workout analysis (splits, HR zones, sleep context), weekly reviews, injury pattern tracking |
+| 🏋️ | **Strength tracking + progression** | Log lifts in plain speech (with optional **RIR**/effort) → a clean per-exercise table with volume + estimated 1RM; the coach reads your last session, sees the trend, and prescribes the next load like a trainer |
 | 📈 | **Second-by-second analysis** | FIT-file parsing: HR/pace/cadence streams + **aerobic decoupling** — the endurance metric real coaches use |
 | ⚖️ | **Calibration loop** | Every 2 weeks: logged deficit vs. actual weight change reveals your personal estimation bias, which corrects all future estimates |
 | 🔄 | **Live-updating brain** | Coaching rules live in [`playbook.md`](playbook.md), fetched by your server at runtime — improvements reach every user instantly, no reinstall |
