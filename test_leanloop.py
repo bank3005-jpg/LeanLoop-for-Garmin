@@ -74,7 +74,7 @@ def _tl(m,p,pl,v):
         {"type":"table_row","table_row":{"cells":[[{"plain_text":"Bench"}],[{"plain_text":"60"}],[{"plain_text":"4×8"}],[{"plain_text":"1920"}],[{"plain_text":"76"}]]}}]}
     return {"results":[]}
 main._notion=_tl
-ok("traininglog_read lift table", main.traininglog_read("2026-08-10",type="weights")[0]["lifts"]==[["Bench",60.0,4.0,8.0]])
+ok("traininglog_read lift table", main.traininglog_read("2026-08-10",type="weights")[0]["lifts"]==[["Bench",60.0,4.0,8.0,None]])
 
 class G:
     def get_sleep_data(s,d): return {"dailySleepDTO":{"sleepScores":{"overall":{"value":68}},"sleepTimeSeconds":20031},"avgOvernightHrv":51,"restingHeartRate":48,"bodyBatteryChange":56}
@@ -106,7 +106,7 @@ main._notion_write=lambda m,p,pl:{"id":"x"}
 _seen=[]; main._replace_table=lambda bid,tb,header=None:_seen.append(("clear" if tb is None else "write",header))
 ok("weightlog None = table untouched", main.weightlog_upsert(session="P",lifts=None)["status"].startswith("session-row"))
 _seen.clear()
-ok("weightlog [] = cleared with lift header", main.weightlog_upsert(session="P",lifts=[])["status"]=="lifts-cleared" and _seen==[("clear",main._LIFT_HEADER)])
+ok("weightlog [] = cleared with lift header", main.weightlog_upsert(session="P",lifts=[])["status"]=="lifts-cleared" and _seen==[("clear",main._LIFT_HEADERS)])
 ok("body_battery_change (not body_battery) in REC_KEYS", "body_battery_change" in main._REC_KEYS and "body_battery" not in main._REC_KEYS)
 
 
@@ -156,7 +156,17 @@ def _lift_rd(m,p,pl,v):
     if "/tl/" in p: return {"results":[_RR(["ท่า","นน(kg)","เซ็ต×ครั้ง","volume","e1RM"]),_RR(["Bench","60","4×8","1920","76"])]}
     return {"results":[]}
 main._notion=_lift_rd
-ok("_parse_lift_table picks lift table by header (skips user table)", main._parse_lift_table("pg2")==[["Bench",60.0,4.0,8.0]])
+ok("_parse_lift_table picks lift table by header (skips user table)", main._parse_lift_table("pg2")==[["Bench",60.0,4.0,8.0,None]])
+
+# ---- B: RIR (5th element) round-trip ----
+def _lift_rir(m,p,pl,v):
+    if p.startswith("/blocks/pgr/children"): return {"results":[{"id":"tl","type":"table"}]}
+    if "/tl/" in p: return {"results":[_RR(main._LIFT_HEADER),_RR(["Bench","60","4×8","2","1920","76"])]}
+    return {"results":[]}
+main._notion=_lift_rir; main._call_cache.clear()
+ok("B _parse_lift_table reads RIR from 6-col table", main._parse_lift_table("pgr")==[["Bench",60.0,4.0,8.0,2.0]])
+main._notion=lambda mth,p,pl,v:{"results":[]}; main._notion_write=lambda mth,p,pl:{"id":"x"}; main._call_cache.clear()
+ok("B weightlog accepts RIR 5th (volume unaffected)", main.weightlog_upsert(page_id="exact",session="Push",lifts=[["Bench",60,4,8,2]])["total_volume"]==1920)
 
 
 # ================= FINAL Hardening Patch regression =================
@@ -378,10 +388,10 @@ ok("RP-T7 verified no lift table = [] (not error)", main._parse_lift_table("pg")
 # lazy lift row stays valid (not malformed)
 def _tlazy(m,p,pl,v):
     if p.startswith("/blocks/pg/children") and "page_size=50" in p: return {"results":[{"id":"tl","type":"table"}]}
-    if "/tl/" in p: return {"results":[_RR(main._LIFT_HEADER),_RR(["Deadlift","-","-","-","-"])]}
+    if "/tl/" in p: return {"results":[_RR(main._LIFT_HEADER),_RR(["Deadlift","-","-","-","-","-"])]}
     return {"results":[]}
 main._notion=_tlazy
-ok("RP lazy lift row ('-') stays valid, not malformed", main._parse_lift_table("pg")==[["Deadlift",None,None,None]])
+ok("RP lazy lift row ('-') stays valid, not malformed", main._parse_lift_table("pg")==[["Deadlift",None,None,None,None]])
 # E2E foodlog_get meal read fail -> top-level error + meals != []
 def _e2e_f(m,p,pl,v):
     if "query" in p: return {"results":[{"id":"pg","properties":{"kcal":{"number":1}}}]}

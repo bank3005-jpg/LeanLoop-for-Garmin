@@ -1145,7 +1145,9 @@ def _notion_write(method, path, payload):
 
 
 _MEAL_HEADER = ["เวลา", "รายการ", "kcal", "p", "c", "f"]
-_LIFT_HEADER = ["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"]
+_LIFT_HEADER_V1 = ["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"]
+_LIFT_HEADER = _LIFT_HEADER_V1[:3] + ["RIR"] + _LIFT_HEADER_V1[3:]  # +RIR column (reps-in-reserve)
+_LIFT_HEADERS = [_LIFT_HEADER, _LIFT_HEADER_V1]  # accept new(6-col) + legacy(5-col) tables
 
 
 def _replace_table(bid, table_block, header=None):
@@ -1162,6 +1164,7 @@ def _replace_table(bid, table_block, header=None):
             raise  # CLEAR: unknown table state must fail closed — never report a false "cleared"
         kids = {"results": []}  # REPLACE stays data-safe (new table is appended first)
     owned = []
+    _hdrs = None if header is None else (header if (header and isinstance(header[0], list)) else [header])
     for b in kids.get("results", []):
         if b.get("type") != "table":
             continue
@@ -1172,7 +1175,7 @@ def _replace_table(bid, table_block, header=None):
             fr = (rr.get("results") or [{}])[0]
             cells = ["".join(x.get("plain_text", "") for x in c).strip()
                      for c in (fr.get("table_row", {}).get("cells", []))]
-            if cells == header:
+            if cells in _hdrs:
                 owned.append(b["id"])  # our table
         except Exception:
             if table_block is None:
@@ -1488,7 +1491,7 @@ def _parse_lift_table(page_id):
         except Exception as e:
             raise RuntimeError(f"lift-table-read-failed: {e}")  # can't prove it's NOT the lift table
         rlist = [r for r in rows.get("results", []) if r.get("type") == "table_row"]
-        if not rlist or _cells(rlist[0]) != _LIFT_HEADER:
+        if not rlist or _cells(rlist[0]) not in _LIFT_HEADERS:
             continue  # NOT the LeanLoop lift table
         out = []
         for r in rlist[1:]:
@@ -1498,7 +1501,7 @@ def _parse_lift_table(page_id):
             if len(v) < 4:
                 raise RuntimeError(f"malformed lift row {v!r}")  # structurally broken -> never drop a lift
             sr = v[2].split("×") if "×" in v[2] else [v[2], ""]
-            out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else "")])
+            out.append([v[0], _n(v[1]), _n(sr[0]), _n(sr[1] if len(sr) > 1 else ""), (_n(v[3]) if _cells(rlist[0])[3:4] == ["RIR"] and len(v) > 3 else None)])
         newest = out  # prefer the newest matching lift table (append-first write may leave a stale dup)
     return newest
 
@@ -1507,23 +1510,23 @@ def _parse_lift_table(page_id):
 def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
     """Log a weight-training session as a clean lift table on its TrainingLog day page.
     Creates/updates ONE TrainingLog row (type=weights) for the date + session name, then rebuilds
-    the lift table from `lifts` = array of ["exercise", load_kg, sets, reps] (a JSON string is also
+    the lift table from `lifts` = array of ["exercise", load_kg, sets, reps, RIR?] (RIR = reps-in-reserve, optional; JSON string
     accepted). The server computes volume (load*sets*reps) and estimated 1RM per lift plus total
     volume, so send the WHOLE session's lifts on every add/edit. date=YYYY-MM-DD, default today."""
     d = day(date)
     sess = (session or "Weights").strip()
     def _lift(l):
-        l = list(l) + [None] * (4 - len(l))
+        l = list(l) + [None] * (5 - len(l))
         def _n(x):
             return None if x in (None, "") else float(x)
-        return [str(l[0]), _n(l[1]), _n(l[2]), _n(l[3])]  # load/sets/reps optional = lazy mode
+        return [str(l[0]), _n(l[1]), _n(l[2]), _n(l[3]), _n(l[4])]  # +RIR (5th), all optional = lazy mode
     lifts_given = lifts is not None
     try:
         import json as _j
         data = _j.loads(lifts) if isinstance(lifts, str) else (lifts or [])
         parsed = [_lift(l) for l in data]
     except Exception:
-        return {"error": "lifts must be [[exercise, load_kg?, sets?, reps?], ...] (numbers optional = lazy)"}
+        return {"error": "lifts must be [[exercise, load_kg?, sets?, reps?, rir?], ...] (numbers optional = lazy)"}
     if not parsed and not session:
         return {"error": "give a session name and/or lifts"}
     if not TRAINING_DS:
@@ -1571,25 +1574,26 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         return {"date": d, "session": sess, "page_id": row_id, "status": "session-row (lifts unchanged)"}
     if not parsed:  # lifts=[] -> explicitly clear the lift table (mirror meals=[])
         try:
-            _replace_table(bid, None, header=_LIFT_HEADER)
+            _replace_table(bid, None, header=_LIFT_HEADERS)
         except Exception as e:
             return {"date": d, "session": sess, "page_id": row_id,
                     "status": "clear-failed", "error": str(e)[:120]}
         return {"date": d, "session": sess, "page_id": row_id, "status": "lifts-cleared"}
     try:
-        trows = [_rowb(["ท่า", "นน(kg)", "เซ็ต×ครั้ง", "volume", "e1RM"], bold=True)]
-        for ex, load, sets, reps in parsed:
+        trows = [_rowb(_LIFT_HEADER, bold=True)]
+        for ex, load, sets, reps, rir in parsed:
+            rc = "-" if rir is None else (int(rir) if float(rir) == int(rir) else rir)
             if load is not None and sets and reps:
                 e1 = round(load * (1 + reps / 30.0), 1)
                 e1 = int(e1) if e1 == int(e1) else e1
                 ld = int(load) if load == int(load) else load
-                trows.append(_rowb([ex, ld, f"{int(sets)}×{int(reps)}", round(load * sets * reps), e1]))
+                trows.append(_rowb([ex, ld, f"{int(sets)}×{int(reps)}", rc, round(load * sets * reps), e1]))
             else:  # lazy row — logged without numbers
-                trows.append(_rowb([ex, "-", "-", "-", "-"]))
-        trows.append(_rowb(["", "รวม volume", "", total_vol, ""], bold=True))
+                trows.append(_rowb([ex, "-", "-", rc, "-", "-"]))
+        trows.append(_rowb(["", "รวม volume", "", "", total_vol, ""], bold=True))
         _replace_table(bid, {"object": "block", "type": "table",
-                             "table": {"table_width": 5, "has_column_header": True,
-                                       "has_row_header": False, "children": trows}}, header=_LIFT_HEADER)
+                             "table": {"table_width": 6, "has_column_header": True,
+                                       "has_row_header": False, "children": trows}}, header=_LIFT_HEADERS)
     except Exception as e:
         return {"date": d, "session": sess, "page_id": row_id, "status": "row-ok-table-failed",
                 "total_volume": total_vol, "error": str(e)}
