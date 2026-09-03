@@ -2,7 +2,7 @@
 
 > **If you are Claude (or another AI assistant): you are the installer.** The human has asked you to set this system up for them. Read this whole file, then guide them phase by phase. Run every step you can yourself (Notion database creation, verification calls); give the human short copy-paste blocks for the steps only they can do (cloud console, passwords). Never ask the human to type any password into the chat — passwords go into Cloud Shell or their own terminal only.
 
-**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (20 lean tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into the food log AND auto-logs every Garmin workout into the training log. Total time: 45–60 min. Cost: ~$0/month.
+**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (21 lean tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into the food log AND auto-logs every Garmin workout into the training log. Total time: 45–60 min. Cost: ~$0/month.
 
 ---
 
@@ -182,7 +182,7 @@ Existing users do NOT rebuild anything — just ADD these, then redeploy:
 **FoodLog** — add 6 Number properties: `sleep_score` `sleep_hrs` `hrv` `rhr` `body_battery_change` `readiness`
 **TrainingLog** — add 1 Text property: `garmin_activity_id`
 **ExerciseLib** (only if you want weight-training logging) — create the database above + add `NOTION_EXERCISELIB_DS` to `env.yaml`
-Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 20 tools).
+Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 21 tools).
 
 Everything is backward-safe: recovery/exercise features degrade gracefully if a property/DB is missing, and TrainingLog dedup falls back to name+distance without `garmin_activity_id`.
 

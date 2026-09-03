@@ -65,6 +65,8 @@ ok("weightlog lazy saves", main.weightlog_upsert(session="Pull",lifts=[["Deadlif
 ok("weightlog empty=cleared", main.weightlog_upsert(session="Pull",lifts=[])["status"]=="lifts-cleared")
 r=main.weightlog_upsert(page_id="exact",session="Push",lifts=[["Bench",60,4,8]])
 ok("weightlog page_id + volume", r["page_id"]=="exact" and r["total_volume"]==1920)
+_gt=main.get_today()
+ok("get_today: date + D-label + weekday + time", isinstance(_gt,dict) and "date" in _gt and _gt["day_label"].startswith("D") and "weekday" in _gt and "time" in _gt)
 
 def _tl(m,p,pl,v):
     if "query" in p: return {"results":[{"id":"w1","properties":{"session":{"title":[{"plain_text":"Push"}]},"type":{"select":{"name":"weights"}},"date":{"date":{"start":"2026-08-10"}}}}],"has_more":False}

@@ -2123,6 +2123,28 @@ def calibrate_report(days: int = 14) -> dict:
 
 
 @mcp.tool()
+def get_today() -> dict:
+    """The server's CURRENT date + time in the user's timezone. ALWAYS call this to anchor any dated
+    action — logging a meal/workout, resolving 'today/yesterday/Monday', a weekly range — and NEVER
+    assume today's date from chat memory (it drifts, so meals get filed to the wrong day). Returns
+    the date, the D[N] program-day label, weekday, and local time."""
+    from datetime import datetime, date as _date
+    from zoneinfo import ZoneInfo
+    tz = os.environ.get("TZ_NAME", "Asia/Bangkok")
+    now = datetime.now(ZoneInfo(tz))
+    d = now.date()
+    label = d.isoformat()
+    d1 = os.environ.get("D1_DATE", "")
+    if d1:
+        try:
+            label = f"D{(d - _date.fromisoformat(d1)).days + 1} | {d.isoformat()}"
+        except Exception:
+            pass
+    return {"date": d.isoformat(), "day_label": label,
+            "weekday": now.strftime("%A"), "time": now.strftime("%H:%M"), "tz": tz}
+
+
+@mcp.tool()
 def get_config() -> str:
     """The user's Config page (profile, kcal/macro targets, carb tiers, calibration, common labels, training phase) as plain text — served fast from this server with a 10-min cache. Use this instead of fetching Config through the Notion connector."""
     pid = os.environ.get("CONFIG_PAGE_ID", "")
