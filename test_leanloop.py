@@ -493,5 +493,41 @@ ok("group_activities: different day = separate group",
 ok("group_activities: unparseable start still kept (not dropped)",
    len(main._group_activities([{"startTimeLocal":None,"duration":0}]))==1)
 
+# ========= Phase 1 regression: category write + graceful degrade (schema missing 'category') =========
+_sv_notion, _sv_sub, _sv_rt, _sv_ds = main._notion, main._run_subtype, main._replace_table, main.TRAINING_DS
+_P1 = {"has": True, "cap": []}
+def _p1_notion(method, path, body=None, ver=None):
+    if "/query" in path:
+        return {"results": []}
+    if path == "/pages":
+        pr = body["properties"]
+        if ("category" in pr) and (not _P1["has"]):
+            raise RuntimeError("category is not a property that exists")
+        _P1["cap"].append(dict(pr)); return {"id": "row-fake"}
+    return {}
+main._notion = _p1_notion; main._run_subtype = lambda aid: None
+main._replace_table = lambda *a, **k: None; main.TRAINING_DS = "ds-fake"
+_frag = [{"activityId":1,"activityName":"Warmup","activityType":{"typeKey":"walking"},"startTimeLocal":"2026-09-01 06:00:00","duration":300,"distance":500,"calories":30},
+         {"activityId":2,"activityName":"Run","activityType":{"typeKey":"running"},"startTimeLocal":"2026-09-01 06:07:00","duration":1800,"distance":5000,"calories":350},
+         {"activityId":3,"activityName":"Cooldown","activityType":{"typeKey":"walking"},"startTimeLocal":"2026-09-01 06:40:00","duration":300,"distance":400,"calories":25}]
+_P1["has"]=True; _P1["cap"]=[]; _r=main._log_training("2026-09-01", _frag)
+ok("cron: category schema -> 3 rows created", _r["created"]==3 and _r["failed"]==0)
+ok("cron: every cardio row tagged category=cardio", all(p["category"]["select"]["name"]=="cardio" for p in _P1["cap"]))
+_P1["has"]=False; _P1["cap"]=[]; _r=main._log_training("2026-09-01", _frag)
+ok("cron: schema MISSING category -> still creates all 3 (degrade)", _r["created"]==3 and _r["failed"]==0)
+ok("cron: degraded rows carry no category key", all("category" not in p for p in _P1["cap"]))
+_P1["has"]=True; _P1["cap"]=[]; _w=main.weightlog_upsert(date="2026-09-02", session="Push", lifts=[["Bench",60,4,8,2]])
+ok("weight: saves with category=weight", _w.get("status")=="saved" and _P1["cap"][0]["category"]["select"]["name"]=="weight")
+_P1["has"]=False; _P1["cap"]=[]; _w=main.weightlog_upsert(date="2026-09-02", session="Push", lifts=[["Bench",60,4,8,2]])
+ok("weight: schema MISSING category -> still saves (degrade)", _w.get("status")=="saved")
+_sv_q, _sv_plt = getattr(main, "_notion_query_all", None), main._parse_lift_table
+main._notion_query_all = lambda ds, filt: [{"id":"pg1","properties":{
+    "session":{"title":[{"plain_text":"Push"}]},"date":{"date":{"start":"2026-09-02"}},
+    "type":{"select":{"name":"weights"}},"category":{"select":{"name":"weight"}}}}]
+main._parse_lift_table = lambda rid: []; main.TRAINING_DS = "ds"
+ok("traininglog_read returns category (coach can use the tag)", main.traininglog_read(date="2026-09-02")[0].get("category")=="weight")
+main._notion_query_all, main._parse_lift_table = _sv_q, _sv_plt
+main._notion, main._run_subtype, main._replace_table, main.TRAINING_DS = _sv_notion, _sv_sub, _sv_rt, _sv_ds
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

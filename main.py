@@ -707,10 +707,18 @@ def _log_training(d, acts):
             _create(props)
             made += 1
         except Exception:
-            try:  # old schema without garmin_activity_id -> retry without it (dedup falls back to name+distance)
-                _create({k: v for k, v in props.items() if k != "garmin_activity_id"})
-                made += 1
-            except Exception:
+            # progressive degradation for older/partial schemas: drop garmin_activity_id first
+            # (dedup falls back to name+distance), then also drop the optional category tag.
+            ok = False
+            for _drop in (["garmin_activity_id"], ["garmin_activity_id", "category"]):
+                try:
+                    _create({k: v for k, v in props.items() if k not in _drop})
+                    made += 1
+                    ok = True
+                    break
+                except Exception:
+                    pass
+            if not ok:
                 failed += 1
     return {"created": made, "failed": failed}
 
@@ -1593,11 +1601,16 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
     props = {"session": {"title": [{"text": {"content": sess[:200]}}]},
              "date": {"date": {"start": d}}, "type": {"select": {"name": "weights"}}, "category": {"select": {"name": "weight"}}}
     if not row_id:
+        def _mk(p):
+            try:
+                return _notion("POST", "/pages", {"parent": {"database_id": TRAINING_DS}, "properties": p}, "2022-06-28")
+            except Exception:
+                return _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": TRAINING_DS}, "properties": p}, "2025-09-03")
         try:
             try:
-                cr = _notion("POST", "/pages", {"parent": {"database_id": TRAINING_DS}, "properties": props}, "2022-06-28")
-            except Exception:
-                cr = _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": TRAINING_DS}, "properties": props}, "2025-09-03")
+                cr = _mk(props)
+            except Exception:  # schema may lack the optional 'category' tag -> retry without it
+                cr = _mk({k: v for k, v in props.items() if k != "category"})
             row_id = cr.get("id")
         except Exception as e:
             return {"error": f"create failed: {e}"}
@@ -1646,7 +1659,7 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
 def traininglog_read(date: str = "", end_date: str = "", type: str = "") -> list | dict:
     """Read TrainingLog rows (what was actually DONE) — the read side missing until now. One date (default today)
     or a range (end_date, inclusive). Optional `type` filter (run/tempo/threshold/interval/recovery-run/weights/
-    muay-thai/...). Each row returns session/type/distance_km/duration/pace/avg_hr/max_hr/zone4_5_pct/training_effect/
+    muay-thai/...). Each row returns session/type/category/distance_km/duration/pace/avg_hr/max_hr/zone4_5_pct/training_effect/
     kcal_burn/coach_notes/body_signals, and for WEIGHT sessions the lift table on its page (`lifts`: [exercise,load,
     sets,reps]) + `page_id`. Read this BEFORE editing a weight session (so no lift is lost — resend the full list or
     pass page_id), and for strength progression, weekly volume-per-muscle, plan adherence, and any full training review."""
@@ -1680,7 +1693,7 @@ def traininglog_read(date: str = "", end_date: str = "", type: str = "") -> list
         rec = {"page_id": row["id"],
                "date": ((p.get("date") or {}).get("date") or {}).get("start"),
                "session": "".join(t.get("plain_text", "") for t in ttl) or None,
-               "type": sel("type"), "distance_km": num("distance_km"), "duration": txt("duration"),
+               "type": sel("type"), "category": sel("category"), "distance_km": num("distance_km"), "duration": txt("duration"),
                "pace": txt("pace"), "avg_hr": num("avg_hr"), "max_hr": num("max_hr"),
                "zone4_5_pct": num("zone4_5_pct"), "training_effect_aerobic": num("training_effect_aerobic"),
                "kcal_burn_adjusted": num("kcal_burn_adjusted"),
