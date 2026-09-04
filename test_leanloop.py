@@ -530,5 +530,103 @@ ok("traininglog_read returns category (coach can use the tag)", main.traininglog
 main._notion_query_all, main._parse_lift_table = _sv_q, _sv_plt
 main._notion, main._run_subtype, main._replace_table, main.TRAINING_DS = _sv_notion, _sv_sub, _sv_rt, _sv_ds
 
+# ================= PHASE 2: flat Lifts DB (dual-write, replace, history, backfill) =================
+import copy as _copy
+_p2_sv = (main._notion, main._replace_table, main.LIFTS_DS, main.TRAINING_DS,
+          getattr(main, "_notion_query_all", None), main._parse_lift_table)
+main.LIFTS_DS = "lifts-ds"; main.TRAINING_DS = "tl-ds"
+main._replace_table = lambda *a, **k: None
+_P2 = {"rows": {}, "n": 0, "tl": 0, "fail_after": None}
+def _p2_read(props):
+    p = _copy.deepcopy(props)
+    for _k, v in p.items():
+        if isinstance(v, dict):
+            for key in ("title", "rich_text"):
+                if key in v:
+                    for e in v[key]:
+                        e["plain_text"] = e.get("text", {}).get("content", "")
+    return p
+def _p2_pt(a): return "".join(t.get("plain_text", "") for t in a)
+def _p2_match(pr, filt):
+    def one(c):
+        if c.get("property") == "session_pid":
+            return _p2_pt(pr.get("session_pid", {}).get("rich_text") or []) == c["rich_text"]["equals"]
+        if c.get("property") == "lift" and "title" in c:
+            return c["title"]["contains"].lower() in _p2_pt(pr.get("lift", {}).get("title") or []).lower()
+        if c.get("property") == "date":
+            d = (pr.get("date", {}).get("date") or {}).get("start")
+            if "on_or_after" in c["date"]: return d >= c["date"]["on_or_after"]
+            if "on_or_before" in c["date"]: return d <= c["date"]["on_or_before"]
+        return True
+    return all(one(c) for c in filt["and"]) if "and" in filt else one(filt)
+def _p2_notion(method, path, body=None, ver=None):
+    par = (body or {}).get("parent", {})
+    if path == "/pages" and (par.get("database_id") == "lifts-ds" or par.get("data_source_id") == "lifts-ds"):
+        if _P2["fail_after"] is not None and _P2["n"] >= _P2["fail_after"]: raise RuntimeError("insert boom")
+        _P2["n"] += 1; pid = f"L{_P2['n']}"; _P2["rows"][pid] = _p2_read(body["properties"]); return {"id": pid}
+    if "lifts-ds/query" in path:
+        filt = (body or {}).get("filter", {})
+        res = [{"id": pid, "properties": pr} for pid, pr in _P2["rows"].items() if _p2_match(pr, filt)]
+        if (body or {}).get("sorts"): res.sort(key=lambda r: (r["properties"].get("date", {}).get("date") or {}).get("start") or "")
+        return {"results": res}
+    if method == "PATCH" and path.startswith("/pages/") and (body or {}).get("archived"):
+        _P2["rows"].pop(path.split("/pages/")[1], None); return {}
+    if path == "/pages": _P2["tl"] += 1; return {"id": f"tl-{_P2['tl']}"}
+    if "/query" in path: return {"results": []}
+    return {}
+main._notion = _p2_notion
+def _p2_rows(): return list(_P2["rows"].values())
+def _p2_lift(pr): return _p2_pt(pr["lift"]["title"])
+def _p2_pid(pr): return _p2_pt(pr["session_pid"]["rich_text"])
+
+_r = main.weightlog_upsert(date="2026-09-01", session="Push", lifts=[["Bench", 60, 4, 8, 2], ["OHP", 40, 3, 10]])
+ok("P2 dual-write: save reports lift_db_rows=2", _r.get("status") == "saved" and _r.get("lift_db_rows") == 2)
+ok("P2 dual-write: 2 rows land in Lifts DB w/ volume 1920",
+   len(_p2_rows()) == 2 and any(_p2_lift(p) == "Bench" and p.get("volume", {}).get("number") == 1920 for p in _p2_rows()))
+main.weightlog_upsert(date="2026-09-01", session="Push", page_id="tl-1", lifts=[["Bench", 65, 4, 8, 1], ["OHP", 40, 3, 10], ["Fly", 20, 3, 12]])
+ok("P2 edit replaces (3 rows, not 5) — no duplicate", len(_p2_rows()) == 3)
+ok("P2 edit: Bench replaced to load 65 (single row)",
+   sum(1 for p in _p2_rows() if _p2_lift(p) == "Bench") == 1 and any(_p2_lift(p) == "Bench" and p.get("load", {}).get("number") == 65 for p in _p2_rows()))
+main.weightlog_upsert(date="2026-09-08", session="Push", page_id="tl-9", lifts=[["Bench", 67.5, 4, 7, 1]])
+_h = main.lift_history(exercise="Bench", weeks=8)
+ok("P2 lift_history: only Bench, sorted oldest->newest",
+   isinstance(_h, list) and all(x["lift"] == "Bench" for x in _h) and [x["date"] for x in _h] == sorted(x["date"] for x in _h))
+main.LIFTS_DS = ""
+_r = main.weightlog_upsert(date="2026-09-02", session="Pull", page_id="tl-2", lifts=[["Row", 50, 4, 10]])
+ok("P2 degrade: no NOTION_LIFTS_DS -> weight still saves", _r.get("status") == "saved" and "lift_db_rows" not in _r)
+ok("P2 degrade: lift_history returns error dict (no crash)", isinstance(main.lift_history(exercise="Row"), dict))
+main.LIFTS_DS = "lifts-ds"
+_P2["rows"].clear(); _P2["n"] = 0
+main.weightlog_upsert(date="2026-09-10", session="Legs", page_id="tl-5", lifts=[["Squat", 100, 5, 5, 2]])
+_before = len(_p2_rows()); _P2["fail_after"] = _P2["n"]
+_r = main.weightlog_upsert(date="2026-09-10", session="Legs", page_id="tl-5", lifts=[["Squat", 105, 5, 5, 1], ["RDL", 80, 3, 8]])
+ok("P2 DB insert fails -> status=saved + lift_db fail-visible (page table safe)",
+   _r.get("status") == "saved" and "db-sync-failed" in _r.get("lift_db", ""))
+ok("P2 insert-first doctrine: old rows NOT lost on failure (no data gap)", len(_p2_rows()) >= _before)
+_P2["fail_after"] = None
+_P2["rows"].clear(); _P2["n"] = 0
+_r = main.weightlog_upsert(date="2026-09-03", session="P", page_id="tl-3", lifts=[["Deadlift"]])
+ok("P2 extreme: lazy name-only lift saves (no volume/e1rm crash)", _r.get("status") == "saved" and _r.get("lift_db_rows") == 1)
+ok("P2 extreme: unicode names ok",
+   main.weightlog_upsert(date="2026-09-04", session="ขา", page_id="tl-4", lifts=[["สควอท", 100, 5, 5, 2]]).get("status") == "saved")
+main.weightlog_upsert(date="2026-09-03", session="P", page_id="tl-3", lifts=[])
+ok("P2 clear([]) archives that session's DB rows", not any(_p2_pid(p) == "tl-3" for p in _p2_rows()))
+_nb = len(_p2_rows()); main.weightlog_upsert(date="2026-09-04", session="ขา", page_id="tl-4", lifts=None)
+ok("P2 lifts=None leaves Lifts DB untouched", len(_p2_rows()) == _nb)
+# backfill idempotent + fail-visible
+_P2["rows"].clear(); _P2["n"] = 0
+main._notion_query_all = lambda ds, f: [
+    {"id": "tlA", "properties": {"session": {"title": [{"plain_text": "Push"}]}, "date": {"date": {"start": "2026-08-01"}}}},
+    {"id": "tlB", "properties": {"session": {"title": [{"plain_text": "Pull"}]}, "date": {"date": {"start": "2026-08-03"}}}}]
+main._parse_lift_table = lambda pid: {"tlA": [["Bench", 60, 4, 8, 2], ["OHP", 40, 3, 10, None]], "tlB": [["Row", 50, 4, 10, 1]]}.get(pid, [])
+_b1 = main.lift_backfill(); _c1 = len(_p2_rows()); _b2 = main.lift_backfill()
+ok("P2 backfill: 2 sessions, 3 lifts", _b1 == {"sessions": 2, "lifts": 3, "errors": []})
+ok("P2 backfill idempotent: re-run does NOT duplicate", len(_p2_rows()) == _c1 == 3)
+main._parse_lift_table = lambda pid: (_ for _ in ()).throw(RuntimeError("read fail")) if pid == "tlB" else [["Bench", 60, 4, 8, 2]]
+_P2["rows"].clear(); _P2["n"] = 0; _b3 = main.lift_backfill()
+ok("P2 backfill fail-visible: unreadable page recorded in errors, others still done",
+   _b3["sessions"] == 1 and len(_b3["errors"]) == 1)
+main._notion, main._replace_table, main.LIFTS_DS, main.TRAINING_DS, main._notion_query_all, main._parse_lift_table = _p2_sv
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

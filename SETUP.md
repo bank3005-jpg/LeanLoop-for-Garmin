@@ -38,6 +38,7 @@ Create a parent page `HealthTracker`, then these databases under it. Record ever
 - **BodyMetrics** — (record its data-source ID for `NOTION_BODYMETRICS_DS` — used by calibrate to read InBody fat mass) day (title, format `D[N] | YYYY-MM-DD` like FoodLog) · date (date) · w, h, bf, BMI, fatMass, leanMass, smm, bmr, score, visceral, whr (number) · source (select) · condition (select: morning-fasted=green, evening=yellow, post-workout=red, other=gray — lets calibrate compare like-for-like scans and cut BIA noise)
 - **FoodLib** — name (title) · serving (text) · kcal, p, c, f (number) · notes (text)
 - **ExerciseLib** (this version, optional — for weight-training) — name (title) · muscle_group (select) · default_load (number) · notes (text) · record its data-source ID for `NOTION_EXERCISELIB_DS`
+- **Lifts** (this version, optional — flat per-lift DB for fast strength history) — lift (title) · date (date) · session (text) · load, sets, reps, rir, volume, e1rm (number) · session_pid (text — the TrainingLog page id each lift belongs to; the replace/backfill key). `weightlog_upsert` mirrors every logged lift here (1 row per lift) so `lift_history` / prescriptions are a single fast query instead of scanning day pages. Record its data-source ID for `NOTION_LIFTS_DS`. Fully optional: unset = the tool falls back to reading the on-page lift tables. After enabling, run `lift_backfill` once to import existing sessions.
 - **LessonsArchive** — plain page (estimation corrections get appended here)
 > ⚠️ **Never rename these database property names later** (e.g. `kcal` → `calories`). The server reads them by exact name; renaming silently breaks logging.
 
@@ -108,6 +109,7 @@ vals = {
   "NOTION_TRAININGLOG_DS": "{{TRAININGLOG_DATA_SOURCE_ID}}",
   "NOTION_BODYMETRICS_DS": "{{BODYMETRICS_DATA_SOURCE_ID}}",
   "NOTION_EXERCISELIB_DS": "{{EXERCISELIB_DATA_SOURCE_ID}}",
+  "NOTION_LIFTS_DS": "{{LIFTS_DATA_SOURCE_ID}}",
   "CONFIG_PAGE_ID": "{{CONFIG_PAGE_ID}}",
   "D1_DATE": "{{D1_DATE}}",
   "PLAYBOOK_URL": "https://raw.githubusercontent.com/bank3005-jpg/LeanLoop-for-Garmin/stable/playbook.md",
@@ -182,7 +184,9 @@ Existing users do NOT rebuild anything — just ADD these, then redeploy:
 **FoodLog** — add 6 Number properties: `sleep_score` `sleep_hrs` `hrv` `rhr` `body_battery_change` `readiness`
 **TrainingLog** — add 1 Text property: `garmin_activity_id` · add 1 Select property: `category` (options: weight, cardio, hiit, mobility, other — the server auto-fills it; missing = degrades gracefully)
 **ExerciseLib** (only if you want weight-training logging) — create the database above + add `NOTION_EXERCISELIB_DS` to `env.yaml`
-Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 21 tools).
+
+**Lifts** (optional — fast strength history) — create the database above + add `NOTION_LIFTS_DS` to `env.yaml`, then run `lift_backfill` once to import existing weight sessions. Leave unset to keep the page-table-only behavior.
+Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 23 tools).
 
 Everything is backward-safe: recovery/exercise features degrade gracefully if a property/DB is missing, and TrainingLog dedup falls back to name+distance without `garmin_activity_id`.
 

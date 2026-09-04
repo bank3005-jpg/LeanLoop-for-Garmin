@@ -84,7 +84,7 @@ Few tools by design: a lean tool list keeps every chat's context small — group
 
 ## 🤖 Using it with ChatGPT or OpenAI Codex (instead of Claude)
 
-LeanLoop's brain is a **standard remote MCP server** — it is *not* tied to Claude. Any MCP-capable client can connect to the exact same Cloud Run server and get the same 21 tools. Two confirmed paths (verified Aug 2026):
+LeanLoop's brain is a **standard remote MCP server** — it is *not* tied to Claude. Any MCP-capable client can connect to the exact same Cloud Run server and get the same 23 tools. Two confirmed paths (verified Aug 2026):
 
 **ChatGPT — Developer Mode** (Plus / Pro / Business / Enterprise / Edu, web app):
 `Settings → Apps → Advanced → Developer Mode` → **add a remote MCP server** → paste your server URL (`https://<your-cloud-run-url>/<MCP_SECRET>/mcp`). ChatGPT supports Streamable HTTP + SSE with *OAuth-or-none*, so the secret-in-URL that LeanLoop already uses works as-is. Put the bootstrap (below) into a **Custom GPT**'s instructions.
@@ -95,7 +95,7 @@ LeanLoop's brain is a **standard remote MCP server** — it is *not* tied to Cla
 **Bootstrap** (the equivalent of the Claude-Project setup — paste into the Custom GPT instructions / AGENTS.md):
 > *At the start of any food / training / coaching conversation, call `get_playbook` (no args) and follow every rule it returns, and read `get_config` for the user's current targets. All coaching logic lives in those two tools — never guess.*
 
-**What ports 1:1 (zero changes):** the whole server, all 21 tools, your Garmin token, your Notion databases, the Cloud Run deployment, and the nightly cron. These are **model-agnostic** — build them once, any AI uses them.
+**What ports 1:1 (zero changes):** the whole server, all 23 tools, your Garmin token, your Notion databases, the Cloud Run deployment, and the nightly cron. These are **model-agnostic** — build them once, any AI uses them.
 
 **What's different / to watch:**
 - **You likely need only the ONE LeanLoop connector**, not a separate Notion one — the server reads *and writes* your food / config / training logs in Notion **itself** (server-side, via its own token). A separate Notion MCP is only needed for occasional hand-editing of page structure.

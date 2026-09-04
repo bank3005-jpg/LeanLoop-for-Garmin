@@ -449,6 +449,7 @@ FOODLOG_DS = os.environ.get("NOTION_FOODLOG_DS", "")
 TRAINING_DS = os.environ.get("NOTION_TRAININGLOG_DS", "")
 EXERCISELIB_DS = os.environ.get("NOTION_EXERCISELIB_DS", "")
 BODYMETRICS_DS = os.environ.get("NOTION_BODYMETRICS_DS", "")
+LIFTS_DS = os.environ.get("NOTION_LIFTS_DS", "")  # Phase2: flat per-lift DB (query accelerator; page table stays the durable copy)
 
 
 def _notion(method, path, payload, version):
@@ -1554,6 +1555,60 @@ def _parse_lift_table(page_id):
     return newest
 
 
+def _lift_db_replace(session_pid, d, session, parsed):
+    """Sync the flat Lifts DB for ONE session (1 row per lift) so per-exercise history is a single fast
+    query. NO-OP (returns None) when NOTION_LIFTS_DS is unset -> feature degrades to page-table only.
+    Safety doctrine (mirror _replace_table): INSERT new rows FIRST, then archive the old ones — so a
+    mid-failure leaves the old rows intact (a visible, self-healing duplicate) rather than a data gap.
+    The on-page lift table written by the caller remains the durable backup; this DB is the read cache.
+    Raises on insert failure so the caller reports it fail-visible. Returns count of rows written."""
+    if not LIFTS_DS:
+        return None
+    spid = str(session_pid or "")
+    if not spid:
+        raise RuntimeError("lift-db: missing session page id")
+    # find existing rows for this session (the replace key)
+    flt = {"filter": {"property": "session_pid", "rich_text": {"equals": spid}}, "page_size": 100}
+    try:
+        r = _notion("POST", f"/databases/{LIFTS_DS}/query", flt, "2022-06-28")
+    except Exception:
+        r = _notion("POST", f"/data_sources/{LIFTS_DS}/query", flt, "2025-09-03")
+    old = [row["id"] for row in r.get("results", [])]
+    # insert new rows FIRST
+    made = 0
+    for l in parsed:
+        ex, load, sets, reps, rir = (list(l) + [None] * 5)[:5]
+        pr = {"lift": {"title": [{"text": {"content": str(ex)[:200]}}]},
+              "date": {"date": {"start": d}},
+              "session": {"rich_text": [{"text": {"content": str(session)[:200]}}]},
+              "session_pid": {"rich_text": [{"text": {"content": spid}}]}}
+        if load is not None:
+            pr["load"] = {"number": load}
+        if sets is not None:
+            pr["sets"] = {"number": sets}
+        if reps is not None:
+            pr["reps"] = {"number": reps}
+        if rir is not None:
+            pr["rir"] = {"number": rir}
+        if load is not None and sets and reps:
+            pr["volume"] = {"number": round(load * sets * reps)}
+            pr["e1rm"] = {"number": round(load * (1 + reps / 30.0), 1)}
+        def _mk(p):
+            try:
+                _notion("POST", "/pages", {"parent": {"database_id": LIFTS_DS}, "properties": p}, "2022-06-28")
+            except Exception:
+                _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": LIFTS_DS}, "properties": p}, "2025-09-03")
+        _mk(pr)
+        made += 1
+    # archive old rows AFTER new inserted (best-effort; a leftover = visible dup, self-heals next sync)
+    for pid in old:
+        try:
+            _notion("PATCH", f"/pages/{pid}", {"archived": True}, "2022-06-28")
+        except Exception:
+            pass
+    return made
+
+
 @mcp.tool()
 def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
     """Log a weight-training session as a clean lift table on its TrainingLog day page.
@@ -1631,6 +1686,10 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         except Exception as e:
             return {"date": d, "session": sess, "page_id": row_id,
                     "status": "clear-failed", "error": str(e)[:120]}
+        try:  # Phase2: clear the flat Lifts DB rows for this session too
+            _lift_db_replace(row_id, d, sess, [])
+        except Exception:
+            pass  # page table already cleared (authoritative); stale DB rows self-heal on next sync
         return {"date": d, "session": sess, "page_id": row_id, "status": "lifts-cleared"}
     try:
         trows = [_rowb(_LIFT_HEADER, bold=True)]
@@ -1650,9 +1709,100 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
     except Exception as e:
         return {"date": d, "session": sess, "page_id": row_id, "status": "row-ok-table-failed",
                 "total_volume": total_vol, "error": str(e)}
-    return {"date": d, "session": sess, "page_id": row_id, "status": "saved",
-            "lifts": len(parsed), "total_volume": total_vol}
+    out = {"date": d, "session": sess, "page_id": row_id, "status": "saved",
+           "lifts": len(parsed), "total_volume": total_vol}
+    try:  # Phase2: sync flat Lifts DB (read cache). Page table above is the durable copy -> a DB
+        ldb = _lift_db_replace(row_id, d, sess, parsed)  # failure here never loses data.
+        if ldb is not None:
+            out["lift_db_rows"] = ldb
+    except Exception as e:
+        out["lift_db"] = f"db-sync-failed: {str(e)[:80]}"  # fail-visible; page table remains authoritative
+    return out
 
+
+
+@mcp.tool()
+def lift_history(exercise: str = "", weeks: int = 6, limit: int = 40) -> list | dict:
+    """Fast per-exercise strength history from the flat Lifts DB (1 row per lift) — the accurate, cheap
+    way to answer "what did I lift last time" for a prescription, instead of opening many day pages.
+    `exercise` = name, case-insensitive substring (empty = every lift in the window). `weeks` = look-back
+    (default 6). Returns rows oldest->newest: [{date, lift, session, load, sets, reps, rir, e1rm, volume}].
+    Use this FIRST for per-exercise last-load; if it errors or returns [], fall back to traininglog_read."""
+    if not LIFTS_DS:
+        return {"error": "NOTION_LIFTS_DS not set — flat Lifts DB unavailable; use traininglog_read (page tables) instead"}
+    from datetime import date as _date, timedelta as _tdd
+    try:
+        since = (_date.fromisoformat(day("")) - _tdd(days=max(1, int(weeks)) * 7)).isoformat()
+    except Exception:
+        since = (_date.today() - _tdd(days=42)).isoformat()
+    conds = [{"property": "date", "date": {"on_or_after": since}}]
+    if exercise:
+        conds.append({"property": "lift", "title": {"contains": exercise}})
+    flt = {"filter": {"and": conds}, "sorts": [{"property": "date", "direction": "ascending"}],
+           "page_size": max(1, min(int(limit) if str(limit).isdigit() else 40, 100))}
+    try:
+        try:
+            r = _notion("POST", f"/databases/{LIFTS_DS}/query", flt, "2022-06-28")
+        except Exception:
+            r = _notion("POST", f"/data_sources/{LIFTS_DS}/query", flt, "2025-09-03")
+    except Exception as e:
+        return {"error": f"lift-query-failed: {e}"}  # UNKNOWN != empty -> never imply "no history"
+    out = []
+    for row in r.get("results", []):
+        p = row.get("properties", {})
+        def num(k):
+            return (p.get(k) or {}).get("number")
+        def txt(k):
+            rt = (p.get(k) or {}).get("rich_text") or []
+            return "".join(t.get("plain_text", "") for t in rt) or None
+        ttl = (p.get("lift") or {}).get("title") or []
+        out.append({"date": ((p.get("date") or {}).get("date") or {}).get("start"),
+                    "lift": "".join(t.get("plain_text", "") for t in ttl) or None,
+                    "session": txt("session"), "load": num("load"), "sets": num("sets"),
+                    "reps": num("reps"), "rir": num("rir"), "e1rm": num("e1rm"), "volume": num("volume")})
+    return out
+
+
+@mcp.tool()
+def lift_backfill(start: str = "", end: str = "") -> dict:
+    """One-time / maintenance: fill the flat Lifts DB from the lift tables already on weight TrainingLog
+    pages. Reads every weights session in range (default: all history) and (re)writes its Lifts DB rows.
+    Idempotent — archives a session's existing DB rows before reinserting, so re-running is safe. Run
+    once right after you enable NOTION_LIFTS_DS. Returns {sessions, lifts, errors}."""
+    if not LIFTS_DS:
+        return {"error": "NOTION_LIFTS_DS not set"}
+    if not TRAINING_DS:
+        return {"error": "NOTION_TRAININGLOG_DS not set"}
+    conds = [{"property": "type", "select": {"equals": "weights"}}]
+    if start:
+        conds.append({"property": "date", "date": {"on_or_after": day(start)}})
+    if end:
+        conds.append({"property": "date", "date": {"on_or_before": day(end)}})
+    try:
+        rows = _notion_query_all(TRAINING_DS, {"and": conds} if len(conds) > 1 else conds[0])
+    except Exception as e:
+        return {"error": f"traininglog-query-failed: {e}"}
+    sessions = lifts = 0
+    errors = []
+    for row in rows:
+        p = row.get("properties", {})
+        d = ((p.get("date") or {}).get("date") or {}).get("start")
+        ttl = (p.get("session") or {}).get("title") or []
+        sess = "".join(t.get("plain_text", "") for t in ttl) or "Weights"
+        try:
+            parsed = _parse_lift_table(row["id"])
+        except Exception as e:
+            errors.append(f"{d}/{sess}: parse {str(e)[:50]}")
+            continue  # UNKNOWN page read != empty -> skip, don't wipe/replace with nothing
+        if not parsed:
+            continue
+        try:
+            n = _lift_db_replace(row["id"], d, sess, parsed)
+            sessions += 1
+            lifts += (n or 0)
+        except Exception as e:
+            errors.append(f"{d}/{sess}: sync {str(e)[:50]}")
+    return {"sessions": sessions, "lifts": lifts, "errors": errors[:20]}
 
 
 @mcp.tool()

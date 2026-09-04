@@ -8,7 +8,7 @@ When you deploy, everything is **your own** — with **one** exception:
 
 | Part | Whose it is | Do the original author's changes reach you? |
 |---|---|---|
-| Server code (`main.py`, the 21 tools) | your Cloud Run, from your clone | ❌ No — only when **you** `git pull` + redeploy |
+| Server code (`main.py`, the 23 tools) | your Cloud Run, from your clone | ❌ No — only when **you** `git pull` + redeploy |
 | Your data — Notion (food / training / body / Config), Garmin, Cloud, secrets | 100% yours | ❌ Never |
 | **`playbook.md` (the coaching rules)** | fetched **live at runtime** from whatever `PLAYBOOK_URL` points to | ✅ **Yes, within ~15 min — IF `PLAYBOOK_URL` points at the upstream repo** |
 
