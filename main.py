@@ -555,6 +555,44 @@ def _tl_type(a):
     return "other"
 
 
+_CATEGORY = {"weights": "weight",
+    "run": "cardio", "tempo": "cardio", "threshold": "cardio", "vo2max": "cardio",
+    "interval": "cardio", "recovery-run": "cardio", "ride": "cardio", "walk": "cardio",
+    "hyrox-sim": "hiit", "muay-thai": "hiit", "mobility": "mobility", "corrective": "mobility"}
+
+
+def _category(t):
+    """Coarse grouping for TrainingLog analysis: weight / cardio / hiit / mobility / other."""
+    return _CATEGORY.get((t or "").lower(), "other")
+
+
+def _group_activities(acts, gap_sec=1800):
+    """Cluster activities that are really ONE workout Garmin split into pieces (pause->walk, warmup+main,
+    cooldown-walk): same local day + <=gap between one activity's end and the next's start. Returns a
+    list of groups (each = list of activities). Un-parseable start times -> each its own group (never dropped)."""
+    from datetime import datetime as _dt, timedelta as _td3
+    def _p(x):
+        try:
+            return _dt.fromisoformat(str(x).replace("Z", "").split(".")[0].strip())
+        except Exception:
+            return None
+    dated = sorted([(_p(a.get("startTimeLocal")), a.get("duration") or 0, a)
+                    for a in acts if _p(a.get("startTimeLocal"))], key=lambda x: x[0])
+    groups, cur, last_end = [], [], None
+    for st, dur, a in dated:
+        if cur and last_end and st.date() == last_end.date() and (st - last_end).total_seconds() <= gap_sec:
+            cur.append(a)
+        else:
+            if cur:
+                groups.append(cur)
+            cur = [a]
+        last_end = st + _td3(seconds=dur)
+    if cur:
+        groups.append(cur)
+    groups += [[a] for a in acts if not _p(a.get("startTimeLocal"))]
+    return groups
+
+
 _TE_LABEL_MAP = (
     ("RECOVERY", "recovery-run"), ("AEROBIC_BASE", "run"), ("BASE", "run"),
     ("TEMPO", "tempo"), ("THRESHOLD", "threshold"), ("VO2MAX", "vo2max"),
@@ -632,10 +670,12 @@ def _log_training(d, acts):
         if _is_dup(a.get("activityId"), name, round(km, 2) if km else None):
             continue
         cals = a.get("calories") or 0
+        ftype = (_run_subtype(a.get("activityId")) or btype) if btype == "run" else btype
         props = {
             "session": {"title": [{"text": {"content": name[:200]}}]},
             "date": {"date": {"start": d}},
-            "type": {"select": {"name": (_run_subtype(a.get("activityId")) or btype) if btype == "run" else btype}},
+            "type": {"select": {"name": ftype}},
+            "category": {"select": {"name": _category(ftype)}},
             "kcal_burn_app": {"number": round(cals)},
             "kcal_burn_adjusted": {"number": round(cals * (CARDIO_BURN_FACTOR if tkey in _CARDIO else OTHER_BURN_FACTOR))},
         }
@@ -1551,7 +1591,7 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
 
     total_vol = round(sum(l[1] * l[2] * l[3] for l in parsed if l[1] is not None and l[2] and l[3]))
     props = {"session": {"title": [{"text": {"content": sess[:200]}}]},
-             "date": {"date": {"start": d}}, "type": {"select": {"name": "weights"}}}
+             "date": {"date": {"start": d}}, "type": {"select": {"name": "weights"}}, "category": {"select": {"name": "weight"}}}
     if not row_id:
         try:
             try:
@@ -1797,9 +1837,12 @@ def weekly_report(days: int = 7) -> dict:
                                   "min": round((a.get("duration") or 0) / 60),
                                   "kcal": a.get("calories"), "avgHR": a.get("averageHR"),
                                   "TE_aer": a.get("aerobicTrainingEffect")} for a in acts]
-            res["activity_totals"] = {"sessions": len(acts),
+            _grp = _group_activities(acts)
+            res["activity_totals"] = {"sessions": len(_grp),
+                                      "raw_activities": len(acts),
                                       "km": round(sum((a.get("distance") or 0) for a in acts) / 1000, 1),
-                                      "kcal": round(sum((a.get("calories") or 0) for a in acts))}
+                                      "kcal": round(sum((a.get("calories") or 0) for a in acts)),
+                                      "note": "sessions = time-grouped workouts (Garmin often splits one run into warmup/main/cooldown/pause); raw_activities = ungrouped"}
         except Exception as e:
             res["activities_error"] = str(e)
         try:
@@ -1928,7 +1971,8 @@ def analyze_activity(activity_id: str = "") -> dict:
             back3 = (_d.fromisoformat(start_local) - _td(days=3)).isoformat()
             recent = [a for a in (g.get_activities_by_date(back3, start_local) or [])
                       if str(a.get("activityId")) != str(aid)]
-            res["recent_load_3d"] = {"sessions": len(recent),
+            res["recent_load_3d"] = {"sessions": len(_group_activities(recent)),
+                                     "raw_activities": len(recent),
                                      "total_min": round(sum((a.get("duration") or 0) for a in recent) / 60)}
         except Exception as e:
             res["recent_load_error"] = str(e)

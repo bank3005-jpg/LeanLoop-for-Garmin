@@ -476,5 +476,22 @@ main._call_cache.clear()
 _r=main.foodlib_upsert(name="Anything", page_id="f2", kcal=75)
 ok("foodlib_upsert page_id = precise update", _r["status"]=="updated" and _r["page_id"]=="f2")
 
+# ================= Phase 1: category tag + cardio de-fragmentation =================
+ok("category: weights->weight", main._category("weights")=="weight")
+ok("category: tempo->cardio", main._category("tempo")=="cardio" and main._category("walk")=="cardio")
+ok("category: hyrox->hiit", main._category("hyrox-sim")=="hiit")
+ok("category: unknown->other", main._category("yoga")=="other")
+# fragmented run: warmup 16:00(10m) + main 16:15(30m) + cooldown 16:50(5m) = 1 group; evening 20:00 = 2nd
+_A=[{"startTimeLocal":"2026-09-01 16:00:00","duration":600},
+    {"startTimeLocal":"2026-09-01 16:15:00","duration":1800},
+    {"startTimeLocal":"2026-09-01 16:50:00","duration":300},
+    {"startTimeLocal":"2026-09-01 20:00:00","duration":1200}]
+ok("group_activities: 4 fragmented acts -> 2 real sessions", len(main._group_activities(_A))==2)
+ok("group_activities: different day = separate group",
+   len(main._group_activities([{"startTimeLocal":"2026-09-01 16:00:00","duration":600},
+                               {"startTimeLocal":"2026-09-02 16:05:00","duration":600}]))==2)
+ok("group_activities: unparseable start still kept (not dropped)",
+   len(main._group_activities([{"startTimeLocal":None,"duration":0}]))==1)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
