@@ -481,6 +481,7 @@ ok("category: weights->weight", main._category("weights")=="weight")
 ok("category: tempo->cardio", main._category("tempo")=="cardio" and main._category("walk")=="cardio")
 ok("category: hyrox->hiit", main._category("hyrox-sim")=="hiit")
 ok("category: unknown->other", main._category("yoga")=="other")
+ok("category: non-string input (None/int/list) never crashes", all(isinstance(main._category(v),str) for v in [None,123,[],"",0]))
 # fragmented run: warmup 16:00(10m) + main 16:15(30m) + cooldown 16:50(5m) = 1 group; evening 20:00 = 2nd
 _A=[{"startTimeLocal":"2026-09-01 16:00:00","duration":600},
     {"startTimeLocal":"2026-09-01 16:15:00","duration":1800},

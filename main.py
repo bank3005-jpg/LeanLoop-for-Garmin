@@ -563,7 +563,7 @@ _CATEGORY = {"weights": "weight",
 
 def _category(t):
     """Coarse grouping for TrainingLog analysis: weight / cardio / hiit / mobility / other."""
-    return _CATEGORY.get((t or "").lower(), "other")
+    return _CATEGORY.get(str(t or "").lower(), "other")
 
 
 def _group_activities(acts, gap_sec=1800):
