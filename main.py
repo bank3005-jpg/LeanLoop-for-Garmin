@@ -606,15 +606,20 @@ def _run_subtype(aid):
     """Garmin's own trainingEffectLabel -> run subtype for the TrainingLog `type` select.
     Tolerant: returns None on ANY failure so _log_training always falls back to the basic
     type and the row is still created. Uses Garmin's classification, not a home-made one."""
+    ck = ("runsub", str(aid))
+    hit = _cget(ck)
+    if hit is not None:
+        return hit or None  # "" = cached "Garmin gave no label", not a cache miss
     try:
         det = client().get_activity(str(aid)) or {}
         lbl = (((det.get("summaryDTO") or {}).get("trainingEffectLabel")) or "").upper()
-        for key, val in _TE_LABEL_MAP:
-            if key in lbl:
-                return val
+        sub = next((val for key, val in _TE_LABEL_MAP if key in lbl), "")
     except Exception:
-        pass
-    return None
+        return None  # transient failure: never cache it as "no subtype"
+    # A finished activity's label never changes, and the nightly close asks for the same one
+    # twice (_log_training, then the food-row label) across 3 days — cache it so that is 1 call.
+    _cput(ck, sub, 86400)
+    return sub or None
 
 
 
@@ -758,6 +763,63 @@ def _recovery_props(d):
 
 _LABEL_SEP = " + "
 
+_RUN_LABEL = {"recovery-run": "Recovery Run", "tempo": "Tempo Run", "threshold": "Threshold Run",
+              "vo2max": "VO2max Run", "interval": "Interval Run", "run": "Easy Run"}
+
+
+def _amount(dist_m, dur_s):
+    """`5k` / `6.2k` for anything with distance, else `44min`. Nothing when we have neither."""
+    if dist_m and dist_m >= 100:
+        km = round(dist_m / 1000.0, 1)
+        return f"{int(km) if km == int(km) else km}k"
+    if dur_s and dur_s >= 60:
+        return f"{int(round(dur_s / 60.0))}min"
+    return ""
+
+
+def _activity_label(acts):
+    """One scannable name for ONE workout (a group of Garmin activities that are really one
+    session): `<what> <how much>` — `Easy Run 5k`, `Tempo Run 6.2k (Treadmill)`, `Ride 15k`,
+    `Cardio 49min`. Distance sports carry km, everything else minutes.
+
+    Deliberately DROPS the noise Garmin puts in activityName — the place ("Bang Kapi Running"),
+    pace/HR/cadence, splits — because the label is an INDEX for scanning the food table; the full
+    record already lives in TrainingLog. It keeps what identifies the session: kind, amount,
+    treadmill, and any intensity marker in the name (Hyrox `Sim 50%`), which is data, not noise.
+    Unknown shape -> fall back to Garmin's own name so information is never lost."""
+    if not acts:
+        return ""
+    dist = sum((a.get("distance") or 0) for a in acts)
+    dur = sum((a.get("duration") or 0) for a in acts)
+    main_a = max(acts, key=lambda a: (a.get("distance") or 0, a.get("duration") or 0))
+    name = (main_a.get("activityName") or "").strip()
+    tkey = ((main_a.get("activityType") or {}).get("typeKey") or "").lower()
+    kind = _tl_type(main_a)
+    # Garmin files an incline/walk session on the treadmill as `treadmill_running`, so the typeKey
+    # alone would call a walk a run. The activity NAME is the honest source when it says walk.
+    if kind == "run" and "walk" in name.lower():
+        kind = "walk"
+    amt = _amount(dist, dur)
+    tm = " (Treadmill)" if ("treadmill" in tkey or "indoor_running" in tkey) else ""
+    if kind == "run":
+        sub = _run_subtype(main_a.get("activityId")) or "run"
+        return f"{_RUN_LABEL.get(sub, 'Run')} {amt}{tm}".strip()
+    if kind == "walk":
+        incline = "Incline " if "incline" in name.lower() else ""
+        return f"{incline}Walk {amt}{tm}".strip()
+    if kind == "ride":
+        return f"Ride {amt}".strip()
+    if kind == "muay-thai":
+        return f"Muay Thai {amt}".strip()
+    if kind == "hyrox-sim":
+        return name or f"Hyrox {amt}".strip()  # keep the user's own Hyrox wording (Sim 50%, Engine, A-F)
+    if kind == "weights":
+        return name or "Weights"
+    generic = ("cardio", "other", "", "generic")
+    if name and name.lower() not in generic:
+        return f"{name} {amt}".strip()  # a named class (Spin, Bodypump, Badminton…)
+    return f"Cardio {amt}".strip()
+
 
 def _compose_label(cur, weights, cardio):
     """The day's exercise label: WEIGHTS FIRST, then whatever the row already had, then any new
@@ -846,11 +908,13 @@ def _close_one(d):
         if kcal is not None and (props.get("deficit_actual") or {}).get("type") == "number":
             new_props["deficit_actual"] = {"number": tdee - kcal}
         new_props["sync"] = {"select": {"name": tag}}
-    cnames, burn = [], 0.0
+    burn = 0.0
     for a in acts:
         t = ((a.get("activityType") or {}).get("typeKey") or "")
         burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
-        cnames.append(a.get("activityName") or t)
+    # one label per REAL workout: group the pieces Garmin split (warm-up / main / cooldown / pause)
+    # before naming, so a fragmented run reads `Easy Run 8.4k`, not five place-named fragments.
+    cnames = [n for n in (_activity_label(g) for g in _group_activities(acts)) if n]
     cur = "".join(x.get("plain_text", "") for x in ((props.get("exercise_type") or {}).get("rich_text") or []))
     label = _compose_label(cur, _weight_sessions(d), cnames)  # weights first; burn untouched
     if label is not None:

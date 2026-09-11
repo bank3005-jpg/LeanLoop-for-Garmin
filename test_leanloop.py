@@ -723,5 +723,71 @@ main.FOODLOG_DS = ""
 ok("log time: no FOODLOG_DS -> skip, no crash", main._foodlog_label("2026-09-12", "Push") is None)
 main.foodlog_get, main._notion, main.FOODLOG_DS = _sv_fg, _sv_n, _sv_fds
 
+# ========== exercise label naming standard (English, <kind> <amount>, noise stripped) ==========
+_sv_rs = main._run_subtype
+main._run_subtype = lambda aid: {"t": "tempo", "i": "interval", "rec": "recovery-run"}.get(aid)
+def _A(name, tk, dist=0, dur=0, aid=None, st="2026-09-12 06:00:00"):
+    return {"activityName": name, "activityType": {"typeKey": tk}, "distance": dist,
+            "duration": dur, "activityId": aid, "startTimeLocal": st}
+_L = main._activity_label
+ok("run: place name dropped, subtype + km kept", _L([_A("Pathum Wan Running", "running", 5000, 1800)]) == "Easy Run 5k")
+ok("run: Garmin subtype drives the name (tempo)", _L([_A("x", "running", 6180, 2200, aid="t")]) == "Tempo Run 6.2k")
+ok("run: interval subtype", _L([_A("วิ่ง interval (Bang Kapi)", "running", 5000, 1900, aid="i")]) == "Interval Run 5k")
+ok("run: treadmill is marked", _L([_A("Treadmill Running", "treadmill_running", 5000, 1800)]) == "Easy Run 5k (Treadmill)")
+ok("pace/HR/splits in the Garmin name are dropped",
+   _L([_A("Tempo run 6.18km (WU897m+tempo5km@6:40+CD283m), HR162 cadence170.7", "treadmill_running", 6180, 2200, aid="t")])
+   == "Tempo Run 6.2k (Treadmill)")
+ok("fragmented run -> ONE label with the summed distance",
+   _L([_A("Khlong Toei Walking", "walking", 400, 300, st="2026-09-12 06:00:00"),
+       _A("Khlong Toei Running", "running", 8000, 2700, st="2026-09-12 06:06:00"),
+       _A("Khlong Toei Walking", "walking", 300, 240, st="2026-09-12 06:53:00")]) == "Easy Run 8.7k")
+ok("walk logged on the treadmill is a WALK, not a run (name beats typeKey)",
+   _L([_A("Incline Walk", "treadmill_running", 2720, 2157)]) == "Incline Walk 2.7k (Treadmill)")
+ok("outdoor walk", _L([_A("Bang Phli Walking", "walking", 3000, 2000)]) == "Walk 3k")
+ok("ride", _L([_A("Bang Kapi Cycling", "cycling", 15000, 2400)]) == "Ride 15k")
+ok("muay thai -> minutes (no distance)", _L([_A("Muay thai", "boxing", 0, 3600)]) == "Muay Thai 60min")
+ok("hyrox: the user's own wording + intensity marker is KEPT (50% is data, not noise)",
+   _L([_A("Hyrox Sim 50%", "other", 0, 4200)]) == "Hyrox Sim 50%")
+ok("hyrox: an unexplained variant is left exactly as written, never reinterpreted",
+   _L([_A("HYROX Complete A-F 50min", "other", 0, 3000)]) == "HYROX Complete A-F 50min")
+ok("class tapped as generic Cardio -> Cardio + minutes", _L([_A("Cardio", "other", 0, 2940)]) == "Cardio 49min")
+ok("a named class keeps its name", _L([_A("Badminton", "other", 0, 3000)]) == "Badminton 50min")
+ok("no distance and no duration -> bare kind, never a fake number", _L([_A("Cardio", "other", 0, 0)]) == "Cardio")
+ok("km rounding: whole numbers lose the .0", main._amount(5000, 0) == "5k" and main._amount(6180, 0) == "6.2k")
+ok("under 100m of GPS drift is not a distance -> falls back to minutes", main._amount(40, 1800) == "30min")
+ok("no activities -> empty label", _L([]) == "")
+main._run_subtype = _sv_rs
+
+# ========== _run_subtype caching (the close asks twice; Garmin should be hit once) ==========
+_sv_cl = main.client
+_calls = {"n": 0}
+class _G:
+    def get_activity(self, aid):
+        _calls["n"] += 1
+        return {"summaryDTO": {"trainingEffectLabel": "TEMPO"}}
+main.client = lambda: _G()
+_r = [main._run_subtype("cache-a1") for _ in range(3)]
+ok("run subtype resolved correctly", _r == ["tempo", "tempo", "tempo"])
+ok("a finished activity is fetched from Garmin ONCE, then cached", _calls["n"] == 1)
+class _Boom:
+    def get_activity(self, aid):
+        _calls["n"] += 1
+        raise RuntimeError("garmin down")
+main.client = lambda: _Boom()
+_calls["n"] = 0
+ok("a transient Garmin failure -> None", main._run_subtype("cache-a2") is None)
+main._run_subtype("cache-a2")
+ok("failure is NOT cached as 'no subtype' — it retries next time", _calls["n"] == 2)
+class _NoLabel:
+    def get_activity(self, aid):
+        _calls["n"] += 1
+        return {"summaryDTO": {}}
+main.client = lambda: _NoLabel()
+_calls["n"] = 0
+ok("'Garmin has no label' is a real answer -> None", main._run_subtype("cache-a3") is None)
+main._run_subtype("cache-a3")
+ok("...and IS cached, so it isn't re-fetched every time", _calls["n"] == 1)
+main.client = _sv_cl
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
