@@ -756,6 +756,29 @@ def _recovery_props(d):
 
 
 
+def _weight_sessions(d):
+    """Session titles of manually-logged weight sessions on date d (Push / Pull / Legs A / Legs B).
+    LABEL ONLY — their burn is already inside Garmin's daily totalKilocalories (watch worn, HR up),
+    so it must NEVER be added to exercise_burn: on a watch day with no Garmin activity the closer
+    does `tdee = total + row_burn`, which would double-count the session.
+    A failed read returns [] on purpose: the label is cosmetic and the nightly close re-runs the
+    last 3 days, so it self-heals — it can never produce a wrong NUMBER."""
+    if not TRAINING_DS:
+        return []
+    try:
+        rows = _notion_query_all(TRAINING_DS, {"and": [{"property": "date", "date": {"equals": d}},
+                                                       {"property": "type", "select": {"equals": "weights"}}]})
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        t = "".join(x.get("plain_text", "") for x in
+                    ((r.get("properties", {}).get("session") or {}).get("title") or [])).strip()
+        if t:
+            out.append(t)
+    return out
+
+
 def _close_one(d):
     # Auto-log workouts to TrainingLog FIRST — independent of whether food was
     # logged that day (a training day with no food row must still get its rows).
@@ -803,16 +826,18 @@ def _close_one(d):
         if kcal is not None and (props.get("deficit_actual") or {}).get("type") == "number":
             new_props["deficit_actual"] = {"number": tdee - kcal}
         new_props["sync"] = {"select": {"name": tag}}
-    if acts:
-        names, burn = [], 0.0
-        for a in acts:
-            t = ((a.get("activityType") or {}).get("typeKey") or "")
-            burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
-            names.append(a.get("activityName") or t)
-        if not ((props.get("exercise_type") or {}).get("rich_text") or []):
-            new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(names)[:200]}}]}
-        if (props.get("exercise_burn") or {}).get("number") in (None, 0):
-            new_props["exercise_burn"] = {"number": round(burn)}
+    names, burn = [], 0.0
+    for a in acts:
+        t = ((a.get("activityType") or {}).get("typeKey") or "")
+        burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
+        names.append(a.get("activityName") or t)
+    names += _weight_sessions(d)  # label only — see _weight_sessions (never touches burn)
+    cur = "".join(x.get("plain_text", "") for x in ((props.get("exercise_type") or {}).get("rich_text") or []))
+    add = [n for n in names if n and n not in cur]  # ADDITIVE: append what's missing, never clobber
+    if add:
+        new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(([cur] if cur else []) + add)[:200]}}]}
+    if acts and (props.get("exercise_burn") or {}).get("number") in (None, 0):
+        new_props["exercise_burn"] = {"number": round(burn)}
     # recovery: same pattern as exercise_type/burn above — add only if this day's row
     # doesn't already carry it (keeps the nightly 3-day re-close from refetching).
     rec = _recovery_props(d) if any((props.get(k) or {}).get("number") is None

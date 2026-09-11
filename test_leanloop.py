@@ -657,5 +657,33 @@ with _TC(main.root) as _c:
     ok("FoodLog read failure -> 502 with error (never a fake 0-kcal day)", _c.get("/wk-test/today").status_code==502)
 main.foodlog_get, main.get_config = _sv_fg, _sv_cfg2
 
+# ========== FoodLog exercise_type label: cardio + manual weight sessions (burn stays Garmin-only) ==========
+_sv_q = main._notion_query_all
+main._notion_query_all = lambda ds, f=None: [
+    {"properties": {"session": {"title": [{"plain_text": "Legs A"}]}}},
+    {"properties": {"session": {"title": [{"plain_text": "Push"}]}}}]
+ok("weight sessions for the day are read as labels", main._weight_sessions("2026-09-12") == ["Legs A", "Push"])
+main._notion_query_all = lambda ds, f=None: (_ for _ in ()).throw(RuntimeError("notion down"))
+ok("TrainingLog read failure -> [] (label is cosmetic, self-heals; never a wrong number)",
+   main._weight_sessions("2026-09-12") == [])
+_sv_tds = main.TRAINING_DS; main.TRAINING_DS = ""
+ok("no TRAINING_DS -> [] (degrades, no crash)", main._weight_sessions("2026-09-12") == [])
+main.TRAINING_DS = _sv_tds
+main._notion_query_all = _sv_q
+
+# the label-composition logic itself (mirrors _close_one)
+def _label(cur, acts_names, weight_names):
+    names = list(acts_names) + list(weight_names)
+    add = [n for n in names if n and n not in cur]
+    return ", ".join(([cur] if cur else []) + add) if add else None
+ok("weight-only day gets a label (was empty before)", _label("", [], ["Push"]) == "Push")
+ok("cardio + weights combine in one label", _label("", ["Treadmill Running"], ["Pull"]) == "Treadmill Running, Pull")
+ok("weight session logged AFTER the run is APPENDED, not clobbered",
+   _label("Treadmill Running", ["Treadmill Running"], ["Legs B"]) == "Treadmill Running, Legs B")
+ok("re-close is idempotent — nothing already present is re-added",
+   _label("Treadmill Running, Pull", ["Treadmill Running"], ["Pull"]) is None)
+ok("nothing trained -> no write at all", _label("", [], []) is None)
+main._notion_query_all = _sv_q
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
