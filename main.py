@@ -756,6 +756,30 @@ def _recovery_props(d):
 
 
 
+_LABEL_SEP = " + "
+
+
+def _label_parts(s):
+    """Split an exercise_type label into parts. Accepts the new ' + ' and the legacy ', '."""
+    import re as _re
+    return [x.strip() for x in _re.split(r"\s*\+\s*|\s*,\s*", s or "") if x.strip()]
+
+
+def _compose_label(cur, weights, cardio):
+    """The day's exercise label: WEIGHTS FIRST, then cardio, joined by ' + ' (e.g. `Push + Treadmill
+    Running`). Anything already on the row that we don't recognise (a hand-written note) is kept at
+    the end so nothing is ever lost, and legacy ', ' labels get normalised on the next write.
+    Returns None when the row is already correct -> no write, so both callers stay idempotent."""
+    seen, ordered = set(), []
+    for n in list(weights) + list(cardio):
+        if n and n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    extra = [p for p in _label_parts(cur) if p not in seen]
+    label = _LABEL_SEP.join(ordered + extra)
+    return label if label != (cur or "") else None
+
+
 def _weight_sessions(d):
     """Session titles of manually-logged weight sessions on date d (Push / Pull / Legs A / Legs B).
     LABEL ONLY — their burn is already inside Garmin's daily totalKilocalories (watch worn, HR up),
@@ -826,16 +850,15 @@ def _close_one(d):
         if kcal is not None and (props.get("deficit_actual") or {}).get("type") == "number":
             new_props["deficit_actual"] = {"number": tdee - kcal}
         new_props["sync"] = {"select": {"name": tag}}
-    names, burn = [], 0.0
+    cnames, burn = [], 0.0
     for a in acts:
         t = ((a.get("activityType") or {}).get("typeKey") or "")
         burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
-        names.append(a.get("activityName") or t)
-    names += _weight_sessions(d)  # label only — see _weight_sessions (never touches burn)
+        cnames.append(a.get("activityName") or t)
     cur = "".join(x.get("plain_text", "") for x in ((props.get("exercise_type") or {}).get("rich_text") or []))
-    add = [n for n in names if n and n not in cur]  # ADDITIVE: append what's missing, never clobber
-    if add:
-        new_props["exercise_type"] = {"rich_text": [{"text": {"content": ", ".join(([cur] if cur else []) + add)[:200]}}]}
+    label = _compose_label(cur, _weight_sessions(d), cnames)  # weights first; burn untouched
+    if label is not None:
+        new_props["exercise_type"] = {"rich_text": [{"text": {"content": label[:200]}}]}
     if acts and (props.get("exercise_burn") or {}).get("number") in (None, 0):
         new_props["exercise_burn"] = {"number": round(burn)}
     # recovery: same pattern as exercise_type/burn above — add only if this day's row
@@ -1650,11 +1673,12 @@ def _foodlog_label(d, name):
         if not pid:
             return None
         cur = r.get("exercise_type") or ""
-        if name in cur:
+        label = _compose_label(cur, [name], [])  # the weight session leads the label
+        if label is None:
             return "unchanged"
         _notion("PATCH", f"/pages/{pid}",
-                {"properties": {"exercise_type": {"rich_text": [{"text": {"content":
-                    ", ".join(([cur] if cur else []) + [name])[:200]}}]}}}, "2022-06-28")
+                {"properties": {"exercise_type": {"rich_text": [{"text": {"content": label[:200]}}]}}},
+                "2022-06-28")
         return "labelled"
     except Exception:
         return None

@@ -671,18 +671,20 @@ ok("no TRAINING_DS -> [] (degrades, no crash)", main._weight_sessions("2026-09-1
 main.TRAINING_DS = _sv_tds
 main._notion_query_all = _sv_q
 
-# the label-composition logic itself (mirrors _close_one)
-def _label(cur, acts_names, weight_names):
-    names = list(acts_names) + list(weight_names)
-    add = [n for n in names if n and n not in cur]
-    return ", ".join(([cur] if cur else []) + add) if add else None
-ok("weight-only day gets a label (was empty before)", _label("", [], ["Push"]) == "Push")
-ok("cardio + weights combine in one label", _label("", ["Treadmill Running"], ["Pull"]) == "Treadmill Running, Pull")
-ok("weight session logged AFTER the run is APPENDED, not clobbered",
-   _label("Treadmill Running", ["Treadmill Running"], ["Legs B"]) == "Treadmill Running, Legs B")
-ok("re-close is idempotent — nothing already present is re-added",
-   _label("Treadmill Running, Pull", ["Treadmill Running"], ["Pull"]) is None)
-ok("nothing trained -> no write at all", _label("", [], []) is None)
+# the real label composer: WEIGHTS FIRST, joined by " + "
+ok("weight-only day -> just the session", main._compose_label("", ["Push"], []) == "Push")
+ok("weights lead, cardio follows", main._compose_label("", ["Pull"], ["Tempo Run 5k"]) == "Pull + Tempo Run 5k")
+ok("weight logged after the run is put FIRST, not appended",
+   main._compose_label("Treadmill Running", ["Push"], []) == "Push + Treadmill Running")
+ok("several cardio pieces all join with +",
+   main._compose_label("", ["Pull"], ["Run 10k", "Easy Run 3k"]) == "Pull + Run 10k + Easy Run 3k")
+ok("legacy ', ' label is normalised to ' + ' with weights first",
+   main._compose_label("Treadmill Running, Push", ["Push"], ["Treadmill Running"]) == "Push + Treadmill Running")
+ok("already correct -> None (no write; idempotent for both callers)",
+   main._compose_label("Push + Treadmill Running", ["Push"], ["Treadmill Running"]) is None)
+ok("a hand-written note on the row is kept at the end, never lost",
+   main._compose_label("แบดมินตัน 49 นาที", ["Pull"], []) == "Pull + แบดมินตัน 49 นาที")
+ok("nothing trained -> None (no write at all)", main._compose_label("", [], []) is None)
 main._notion_query_all = _sv_q
 
 # ========== FoodLog label written at LOG time (not waiting for the nightly close) ==========
@@ -701,9 +703,9 @@ ok("log time: label written is exactly the session name",
    "".join(x["text"]["content"] for x in _patched["props"]["exercise_type"]["rich_text"]) == "Push")
 main.foodlog_get = lambda d: {"page_id": "fp1", "exercise_type": "Treadmill Running"}
 main._foodlog_label("2026-09-12", "Legs B")
-ok("log time: APPENDS to an existing cardio label, never clobbers",
-   "".join(x["text"]["content"] for x in _patched["props"]["exercise_type"]["rich_text"]) == "Treadmill Running, Legs B")
-main.foodlog_get = lambda d: {"page_id": "fp1", "exercise_type": "Treadmill Running, Push"}
+ok("log time: weight leads the label, cardio kept after it",
+   "".join(x["text"]["content"] for x in _patched["props"]["exercise_type"]["rich_text"]) == "Legs B + Treadmill Running")
+main.foodlog_get = lambda d: {"page_id": "fp1", "exercise_type": "Push + Treadmill Running"}
 ok("log time: already labelled -> unchanged (no double-add; closer can't duplicate it either)",
    main._foodlog_label("2026-09-12", "Push") == "unchanged")
 main.foodlog_get = lambda d: {"date": "2026-09-12", "status": "no-row"}
