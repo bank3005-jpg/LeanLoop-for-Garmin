@@ -1635,6 +1635,31 @@ def _lift_db_replace(session_pid, d, session, parsed):
     return made
 
 
+def _foodlog_label(d, name):
+    """Put the session label (Push / Pull / Legs A / Legs B) on that day's FoodLog row RIGHT NOW.
+    Weights never come from Garmin — the chat has the session name the moment it's logged, so
+    there is nothing to wait for: writing it here is the primary path, and the nightly close is
+    only a backstop for a failed write. ADDITIVE + idempotent (keeps any cardio label, never
+    double-adds), so the two paths can't fight. Best-effort: a FoodLog hiccup must NEVER fail the
+    weight log. No FoodLog row for that date yet -> skip; the closer creates and labels it."""
+    if not (FOODLOG_DS and name):
+        return None
+    try:
+        r = foodlog_get(d)
+        pid = r.get("page_id")
+        if not pid:
+            return None
+        cur = r.get("exercise_type") or ""
+        if name in cur:
+            return "unchanged"
+        _notion("PATCH", f"/pages/{pid}",
+                {"properties": {"exercise_type": {"rich_text": [{"text": {"content":
+                    ", ".join(([cur] if cur else []) + [name])[:200]}}]}}}, "2022-06-28")
+        return "labelled"
+    except Exception:
+        return None
+
+
 @mcp.tool()
 def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
     """Log a weight-training session as a clean lift table on its TrainingLog day page.
@@ -1696,6 +1721,8 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
         except Exception as e:
             return {"error": f"create failed: {e}"}
 
+    _lbl = _foodlog_label(d, sess)  # show it on the food row now, not after tonight's close
+
     def _cell(v, bold=False):
         c = [{"type": "text", "text": {"content": str(v)[:200]}}]
         if bold:
@@ -1737,6 +1764,8 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
                 "total_volume": total_vol, "error": str(e)}
     out = {"date": d, "session": sess, "page_id": row_id, "status": "saved",
            "lifts": len(parsed), "total_volume": total_vol}
+    if _lbl == "labelled":
+        out["foodlog_label"] = sess
     try:  # Phase2: sync flat Lifts DB (read cache). Page table above is the durable copy -> a DB
         ldb = _lift_db_replace(row_id, d, sess, parsed)  # failure here never loses data.
         if ldb is not None:

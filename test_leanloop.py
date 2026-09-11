@@ -685,5 +685,36 @@ ok("re-close is idempotent — nothing already present is re-added",
 ok("nothing trained -> no write at all", _label("", [], []) is None)
 main._notion_query_all = _sv_q
 
+# ========== FoodLog label written at LOG time (not waiting for the nightly close) ==========
+_sv_fg, _sv_n, _sv_fds = main.foodlog_get, main._notion, main.FOODLOG_DS
+_patched = {}
+def _n_spy(method, path, body=None, ver=None):
+    if method == "PATCH" and path.startswith("/pages/"):
+        _patched["props"] = body["properties"]
+        return {}
+    return _sv_n(method, path, body, ver)
+main._notion = _n_spy; main.FOODLOG_DS = "fl"
+
+main.foodlog_get = lambda d: {"page_id": "fp1", "exercise_type": None}
+ok("log time: empty food row gets the session label", main._foodlog_label("2026-09-12", "Push") == "labelled")
+ok("log time: label written is exactly the session name",
+   "".join(x["text"]["content"] for x in _patched["props"]["exercise_type"]["rich_text"]) == "Push")
+main.foodlog_get = lambda d: {"page_id": "fp1", "exercise_type": "Treadmill Running"}
+main._foodlog_label("2026-09-12", "Legs B")
+ok("log time: APPENDS to an existing cardio label, never clobbers",
+   "".join(x["text"]["content"] for x in _patched["props"]["exercise_type"]["rich_text"]) == "Treadmill Running, Legs B")
+main.foodlog_get = lambda d: {"page_id": "fp1", "exercise_type": "Treadmill Running, Push"}
+ok("log time: already labelled -> unchanged (no double-add; closer can't duplicate it either)",
+   main._foodlog_label("2026-09-12", "Push") == "unchanged")
+main.foodlog_get = lambda d: {"date": "2026-09-12", "status": "no-row"}
+ok("log time: no FoodLog row yet -> skip (closer will create+label it)",
+   main._foodlog_label("2026-09-12", "Push") is None)
+main.foodlog_get = lambda d: (_ for _ in ()).throw(RuntimeError("notion down"))
+ok("log time: FoodLog failure -> None, weight log must never fail because of a label",
+   main._foodlog_label("2026-09-12", "Push") is None)
+main.FOODLOG_DS = ""
+ok("log time: no FOODLOG_DS -> skip, no crash", main._foodlog_label("2026-09-12", "Push") is None)
+main.foodlog_get, main._notion, main.FOODLOG_DS = _sv_fg, _sv_n, _sv_fds
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
