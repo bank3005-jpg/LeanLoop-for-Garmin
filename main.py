@@ -759,25 +759,21 @@ def _recovery_props(d):
 _LABEL_SEP = " + "
 
 
-def _label_parts(s):
-    """Split an exercise_type label into parts. Accepts the new ' + ' and the legacy ', '."""
-    import re as _re
-    return [x.strip() for x in _re.split(r"\s*\+\s*|\s*,\s*", s or "") if x.strip()]
-
-
 def _compose_label(cur, weights, cardio):
-    """The day's exercise label: WEIGHTS FIRST, then cardio, joined by ' + ' (e.g. `Push + Treadmill
-    Running`). Anything already on the row that we don't recognise (a hand-written note) is kept at
-    the end so nothing is ever lost, and legacy ', ' labels get normalised on the next write.
-    Returns None when the row is already correct -> no write, so both callers stay idempotent."""
-    seen, ordered = set(), []
-    for n in list(weights) + list(cardio):
-        if n and n not in seen:
-            seen.add(n)
-            ordered.append(n)
-    extra = [p for p in _label_parts(cur) if p not in seen]
-    label = _LABEL_SEP.join(ordered + extra)
-    return label if label != (cur or "") else None
+    """The day's exercise label: WEIGHTS FIRST, then whatever the row already had, then any new
+    cardio — joined by ' + ' (e.g. `Push + Treadmill Running`).
+
+    It never PARSES `cur`: Garmin and hand-written descriptions contain commas and plus signs
+    ("Tempo run (WU897m+tempo5km@6:40+CD283m), HR162"), so splitting on them would corrupt the
+    text. Membership is a plain substring check, so this only ever prepends or appends — existing
+    text is passed through byte-for-byte. Returns None when there is nothing to add, which keeps
+    both writers (log-time + nightly closer) idempotent and unable to fight each other."""
+    cur = cur or ""
+    lead = [n for n in weights if n and n not in cur]
+    tail = [n for n in cardio if n and n not in cur]
+    if not lead and not tail:
+        return None
+    return _LABEL_SEP.join(lead + ([cur] if cur else []) + tail)
 
 
 def _weight_sessions(d):

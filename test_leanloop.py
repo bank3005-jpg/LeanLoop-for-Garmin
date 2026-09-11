@@ -678,12 +678,17 @@ ok("weight logged after the run is put FIRST, not appended",
    main._compose_label("Treadmill Running", ["Push"], []) == "Push + Treadmill Running")
 ok("several cardio pieces all join with +",
    main._compose_label("", ["Pull"], ["Run 10k", "Easy Run 3k"]) == "Pull + Run 10k + Easy Run 3k")
-ok("legacy ', ' label is normalised to ' + ' with weights first",
-   main._compose_label("Treadmill Running, Push", ["Push"], ["Treadmill Running"]) == "Push + Treadmill Running")
+ok("legacy ', ' row already has both -> left untouched (never re-parsed)",
+   main._compose_label("Treadmill Running, Push", ["Push"], ["Treadmill Running"]) is None)
+ok("a description containing ',' and '+' passes through byte-for-byte (never split)",
+   main._compose_label("Tempo run (WU897m+tempo5km@6:40+CD283m), HR162", ["Pull"], [])
+   == "Pull + Tempo run (WU897m+tempo5km@6:40+CD283m), HR162")
 ok("already correct -> None (no write; idempotent for both callers)",
    main._compose_label("Push + Treadmill Running", ["Push"], ["Treadmill Running"]) is None)
-ok("a hand-written note on the row is kept at the end, never lost",
+ok("a hand-written note is kept verbatim after the weight session",
    main._compose_label("แบดมินตัน 49 นาที", ["Pull"], []) == "Pull + แบดมินตัน 49 นาที")
+ok("slot names are NOT hardcoded — any future PLAN vocabulary works",
+   main._compose_label("", ["Upper B"], ["Zone2 40min"]) == "Upper B + Zone2 40min")
 ok("nothing trained -> None (no write at all)", main._compose_label("", [], []) is None)
 main._notion_query_all = _sv_q
 
