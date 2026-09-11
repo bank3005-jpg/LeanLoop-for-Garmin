@@ -186,6 +186,8 @@ Existing users do NOT rebuild anything — just ADD these, then redeploy:
 **ExerciseLib** (only if you want weight-training logging) — create the database above + add `NOTION_EXERCISELIB_DS` to `env.yaml`
 
 **Lifts** (optional — fast strength history) — create the database above + add `NOTION_LIFTS_DS` to `env.yaml`, then run `lift_backfill` once to import existing weight sessions. Leave unset to keep the page-table-only behavior.
+
+**Today widget** (optional — phone/watch) — set `WIDGET_KEY` to a long random string (e.g. `openssl rand -hex 16`). The server then serves `GET https://<your-service>/<WIDGET_KEY>/today` → `{date, kcal, p, c, f, kcal_target, p_target, remaining, logged}` (read-only, no-store). Point an iOS Scriptable widget (see `widget/scriptable-today.js`) or any URL widget at it. Unset = endpoint doesn't exist.
 Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 23 tools).
 
 Everything is backward-safe: recovery/exercise features degrade gracefully if a property/DB is missing, and TrainingLog dedup falls back to name+distance without `garmin_activity_id`.

@@ -1,7 +1,7 @@
 """LeanLoop focused regression suite (run: python3 test_leanloop.py). Mocks Notion/Garmin. No deps."""
 import os
 from datetime import datetime, timedelta
-os.environ.update(dict(MCP_SECRET="t", GARMINTOKENS_B64="d", NOTION_TOKEN="d",
+os.environ.update(dict(MCP_SECRET="t", GARMINTOKENS_B64="d", NOTION_TOKEN="d", WIDGET_KEY="wk-test",
     NOTION_FOODLOG_DS="fl", NOTION_TRAININGLOG_DS="tl", NOTION_BODYMETRICS_DS="bm",
     NOTION_EXERCISELIB_DS="ex", D1_DATE="2025-01-01", TDEE_BASELINE="2000",
     PROGRESS_PAGE_ID="p", TZ_NAME="Asia/Bangkok", CONFIG_PAGE_ID="c",
@@ -627,6 +627,35 @@ _P2["rows"].clear(); _P2["n"] = 0; _b3 = main.lift_backfill()
 ok("P2 backfill fail-visible: unreadable page recorded in errors, others still done",
    _b3["sessions"] == 1 and len(_b3["errors"]) == 1)
 main._notion, main._replace_table, main.LIFTS_DS, main.TRAINING_DS, main._notion_query_all, main._parse_lift_table = _p2_sv
+
+# ================= /today widget endpoint (phone/watch) =================
+_row = {"date":"2026-09-11","day":"D181 | 2026-09-11","kcal":1850,"p":145,"c":180,"f":60,"tdee_est":2900}
+_pl = main._today_payload(_row, 2700, 195)
+ok("widget payload: kcal/p/c/f pass through", (_pl["kcal"],_pl["p"],_pl["c"],_pl["f"])==(1850,145,180,60))
+ok("widget payload: remaining = target - kcal", _pl["remaining"]==850 and _pl["kcal_target"]==2700 and _pl["p_target"]==195)
+ok("widget payload: logged=True on a real row", _pl["logged"] is True)
+_pl0 = main._today_payload({"date":"2026-09-11","status":"no-row","day":"D181 | 2026-09-11"}, 2700, 195)
+ok("widget payload: no-row -> kcal 0, logged False, remaining = full target", _pl0["kcal"]==0 and _pl0["logged"] is False and _pl0["remaining"]==2700)
+ok("widget payload: no target -> remaining None (never fake a number)", main._today_payload(_row, None, None)["remaining"] is None)
+_sv_cfg = main.get_config
+main.get_config = lambda: "GOAL_ACTIVE|kcal_daily=2700 (flat)|p=195-210g [floor]|c=carb_cycle|f=65-80g"
+ok("widget targets parsed from Config text (kcal_daily, protein floor)", main._widget_targets()==(2700,195))
+main.get_config = lambda: "config fetch failed: boom"
+ok("widget targets: unreadable Config -> (None, None), no crash", main._widget_targets()==(None,None))
+main.get_config = _sv_cfg
+# real route through the app
+from starlette.testclient import TestClient as _TC
+_sv_fg, _sv_cfg2 = main.foodlog_get, main.get_config
+main.foodlog_get = lambda d: dict(_row)
+main.get_config = lambda: "kcal_daily=2700|p=195-210g"
+with _TC(main.root) as _c:
+    _r = _c.get("/wk-test/today")
+    ok("GET /<WIDGET_KEY>/today -> 200 JSON with kcal + remaining", _r.status_code==200 and _r.json()["kcal"]==1850 and _r.json()["remaining"]==850)
+    ok("widget response is no-store (always fresh)", "no-store" in _r.headers.get("cache-control",""))
+    ok("wrong key -> 404 (endpoint not guessable)", _c.get("/wrong-key/today").status_code==404)
+    main.foodlog_get = lambda d: {"error":"notion down"}
+    ok("FoodLog read failure -> 502 with error (never a fake 0-kcal day)", _c.get("/wk-test/today").status_code==502)
+main.foodlog_get, main.get_config = _sv_fg, _sv_cfg2
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

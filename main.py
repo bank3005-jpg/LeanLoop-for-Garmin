@@ -449,7 +449,8 @@ FOODLOG_DS = os.environ.get("NOTION_FOODLOG_DS", "")
 TRAINING_DS = os.environ.get("NOTION_TRAININGLOG_DS", "")
 EXERCISELIB_DS = os.environ.get("NOTION_EXERCISELIB_DS", "")
 BODYMETRICS_DS = os.environ.get("NOTION_BODYMETRICS_DS", "")
-LIFTS_DS = os.environ.get("NOTION_LIFTS_DS", "")  # Phase2: flat per-lift DB (query accelerator; page table stays the durable copy)
+LIFTS_DS = os.environ.get("NOTION_LIFTS_DS", "")
+WIDGET_KEY = os.environ.get("WIDGET_KEY", "")  # read-only key for the phone/watch "today" widget endpoint (unset = endpoint off)  # Phase2: flat per-lift DB (query accelerator; page table stays the durable copy)
 
 
 def _notion(method, path, payload, version):
@@ -2643,17 +2644,46 @@ async def lifespan(app):
         yield
 
 
-root = Starlette(
-    routes=[
+def _widget_targets():
+    """kcal_daily + protein floor parsed from the Config text (the coach-side numbers). None if absent."""
+    import re as _re
+    t = get_config() or ""
+    k = _re.search(r"kcal_daily=(\d+)", t)
+    pr = _re.search(r"\bp=(\d+)", t)
+    return (int(k.group(1)) if k else None, int(pr.group(1)) if pr else None)
+
+
+def _today_payload(r, kt, pt):
+    """Pure: shape one FoodLog day (foodlog_get result) into the widget JSON."""
+    kcal = r.get("kcal") or 0
+    return {"date": r.get("date"), "day": r.get("day"), "logged": r.get("status") != "no-row",
+            "kcal": kcal, "p": r.get("p") or 0, "c": r.get("c") or 0, "f": r.get("f") or 0,
+            "kcal_target": kt, "p_target": pt,
+            "remaining": (kt - kcal) if kt is not None else None,
+            "tdee_est": r.get("tdee_est")}
+
+
+async def today_widget(request):
+    """Read-only today summary for the phone/watch widget (kcal, p, c, f vs target). Behind the WIDGET_KEY path."""
+    from starlette.responses import JSONResponse
+    r = foodlog_get(day(""))
+    if "error" in r:
+        return JSONResponse({"error": r["error"]}, status_code=502)
+    kt, pt = _widget_targets()
+    return JSONResponse(_today_payload(r, kt, pt), headers={"Cache-Control": "no-store"})
+
+
+_routes = [
         Route("/", lambda r: PlainTextResponse("ok")),
         Route(f"/{SECRET}/closeday", closeday),
         Route(f"/{SECRET}/health", health),
         Route(f"/{SECRET}/stats", lambda r: __import__("starlette.responses", fromlist=["JSONResponse"]).JSONResponse(
             {t: {"calls": v[0], "chars": v[1], "cache_hits": v[2]} for t, v in sorted(_usage.items())})),
         Mount(f"/{SECRET}", app=mcp.streamable_http_app()),
-    ],
-    lifespan=lifespan,
-)
+]
+if WIDGET_KEY:  # opt-in: only exposed when a separate read-only key is configured
+    _routes.append(Route(f"/{WIDGET_KEY}/today", today_widget))
+root = Starlette(routes=_routes, lifespan=lifespan)
 
 if __name__ == "__main__":
     import uvicorn
