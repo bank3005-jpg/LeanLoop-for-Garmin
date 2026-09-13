@@ -669,12 +669,21 @@ def _log_training(d, acts):
     made = 0
     failed = 0
     for a in acts:
-        name = a.get("activityName") or ((a.get("activityType") or {}).get("typeKey") or "activity")
+        raw = a.get("activityName") or ((a.get("activityType") or {}).get("typeKey") or "activity")
+        # Title = the SAME label that goes on the food row (_activity_label), so TrainingLog and
+        # FoodLog can never drift apart: they are literally one function. `Tempo Run 5k` instead of
+        # Garmin's `Bang Kapi Running` - the district says nothing about the session, and identical
+        # place-names made same-day fragments indistinguishable in the Notion table. Fall back to
+        # Garmin's own name if the label comes out empty, so a row is never left nameless.
+        name = _activity_label([a]) or raw
         tkey = ((a.get("activityType") or {}).get("typeKey") or "")
         dur = a.get("duration") or 0
         km = (a.get("distance") or 0) / 1000.0
         btype = _tl_type(a)
-        if _is_dup(a.get("activityId"), name, round(km, 2) if km else None):
+        # dedup on BOTH names: `name` (new standard) and `raw` (what pre-rename rows were titled),
+        # so renaming history can never make the cron re-create a row it already has.
+        if _is_dup(a.get("activityId"), name, round(km, 2) if km else None) or \
+           _is_dup(a.get("activityId"), raw, round(km, 2) if km else None):
             continue
         cals = a.get("calories") or 0
         ftype = (_run_subtype(a.get("activityId")) or btype) if btype == "run" else btype
@@ -764,7 +773,10 @@ def _recovery_props(d):
 _LABEL_SEP = " + "
 
 _RUN_LABEL = {"recovery-run": "Recovery Run", "tempo": "Tempo Run", "threshold": "Threshold Run",
-              "vo2max": "VO2max Run", "interval": "Interval Run", "run": "Easy Run"}
+              "vo2max": "VO2max Run", "interval": "Interval Run"}
+# NOTE there is deliberately no "run" key. `run` is the FALLBACK type, meaning "Garmin returned no
+# trainingEffectLabel" - i.e. the intensity is UNKNOWN, not easy. Calling it `Easy Run` would assert
+# something we never measured (his 6:24/km @ HR166 rows carry type=run), so unknown stays plain `Run`.
 
 
 def _amount(dist_m, dur_s):
@@ -779,7 +791,7 @@ def _amount(dist_m, dur_s):
 
 def _activity_label(acts):
     """One scannable name for ONE workout (a group of Garmin activities that are really one
-    session): `<what> <how much>` — `Easy Run 5k`, `Tempo Run 6.2k (Treadmill)`, `Ride 15k`,
+    session): `<what> <how much>` — `Run 5k`, `Tempo Run 6.2k (Treadmill)`, `Ride 15k`,
     `Cardio 49min`. Distance sports carry km, everything else minutes.
 
     Deliberately DROPS the noise Garmin puts in activityName — the place ("Bang Kapi Running"),
@@ -913,7 +925,7 @@ def _close_one(d):
         t = ((a.get("activityType") or {}).get("typeKey") or "")
         burn += (a.get("calories") or 0) * (CARDIO_BURN_FACTOR if t in _CARDIO else OTHER_BURN_FACTOR)
     # one label per REAL workout: group the pieces Garmin split (warm-up / main / cooldown / pause)
-    # before naming, so a fragmented run reads `Easy Run 8.4k`, not five place-named fragments.
+    # before naming, so a fragmented run reads `Tempo Run 8.4k`, not five place-named fragments.
     cnames = [n for n in (_activity_label(g) for g in _group_activities(acts)) if n]
     cur = "".join(x.get("plain_text", "") for x in ((props.get("exercise_type") or {}).get("rich_text") or []))
     label = _compose_label(cur, _weight_sessions(d), cnames)  # weights first; burn untouched

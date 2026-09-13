@@ -730,17 +730,17 @@ def _A(name, tk, dist=0, dur=0, aid=None, st="2026-09-12 06:00:00"):
     return {"activityName": name, "activityType": {"typeKey": tk}, "distance": dist,
             "duration": dur, "activityId": aid, "startTimeLocal": st}
 _L = main._activity_label
-ok("run: place name dropped, subtype + km kept", _L([_A("Pathum Wan Running", "running", 5000, 1800)]) == "Easy Run 5k")
+ok("run: place name dropped, subtype + km kept", _L([_A("Pathum Wan Running", "running", 5000, 1800)]) == "Run 5k")
 ok("run: Garmin subtype drives the name (tempo)", _L([_A("x", "running", 6180, 2200, aid="t")]) == "Tempo Run 6.2k")
 ok("run: interval subtype", _L([_A("วิ่ง interval (Bang Kapi)", "running", 5000, 1900, aid="i")]) == "Interval Run 5k")
-ok("run: treadmill is marked", _L([_A("Treadmill Running", "treadmill_running", 5000, 1800)]) == "Easy Run 5k (Treadmill)")
+ok("run: treadmill is marked", _L([_A("Treadmill Running", "treadmill_running", 5000, 1800)]) == "Run 5k (Treadmill)")
 ok("pace/HR/splits in the Garmin name are dropped",
    _L([_A("Tempo run 6.18km (WU897m+tempo5km@6:40+CD283m), HR162 cadence170.7", "treadmill_running", 6180, 2200, aid="t")])
    == "Tempo Run 6.2k (Treadmill)")
 ok("fragmented run -> ONE label with the summed distance",
    _L([_A("Khlong Toei Walking", "walking", 400, 300, st="2026-09-12 06:00:00"),
        _A("Khlong Toei Running", "running", 8000, 2700, st="2026-09-12 06:06:00"),
-       _A("Khlong Toei Walking", "walking", 300, 240, st="2026-09-12 06:53:00")]) == "Easy Run 8.7k")
+       _A("Khlong Toei Walking", "walking", 300, 240, st="2026-09-12 06:53:00")]) == "Run 8.7k")
 ok("walk logged on the treadmill is a WALK, not a run (name beats typeKey)",
    _L([_A("Incline Walk", "treadmill_running", 2720, 2157)]) == "Incline Walk 2.7k (Treadmill)")
 ok("outdoor walk", _L([_A("Bang Phli Walking", "walking", 3000, 2000)]) == "Walk 3k")
@@ -788,6 +788,71 @@ ok("'Garmin has no label' is a real answer -> None", main._run_subtype("cache-a3
 main._run_subtype("cache-a3")
 ok("...and IS cached, so it isn't re-fetched every time", _calls["n"] == 1)
 main.client = _sv_cl
+
+# ---------------------------------------------------------------- TrainingLog title standard
+# The row title now comes from _activity_label, the same function that builds the FoodLog label.
+_sv_cl2, _sv_sub2, _sv_not2, _sv_rt2, _sv_ds2 = (
+    main.client, main._run_subtype, main._notion, main._replace_table, main.TRAINING_DS)
+_T = {"cap": [], "rows": []}
+def _t_notion(method, path, body=None, ver=None):
+    if "query" in path:
+        return {"results": _T["rows"]}
+    if method == "POST" and path == "/pages":
+        pr = body.get("properties", {})
+        _T["cap"].append("".join(x["text"]["content"] for x in pr["session"]["title"]))
+        return {"id": "row-fake"}
+    return {}
+main._notion = _t_notion
+main._replace_table = lambda *a, **k: None
+main.TRAINING_DS = "ds-fake"
+main._run_subtype = lambda aid: {"9": "tempo", "10": "recovery-run"}.get(str(aid))
+
+_T["cap"], _T["rows"] = [], []
+main._log_training("2026-09-01", [
+    {"activityId": 9, "activityName": "Khlong Toei Running",
+     "activityType": {"typeKey": "running"}, "duration": 1800, "distance": 5000, "calories": 400}])
+ok("title: place name stripped -> 'Tempo Run 5k'", _T["cap"] == ["Tempo Run 5k"])
+
+_T["cap"], _T["rows"] = [], []
+main._log_training("2026-09-01", [
+    {"activityId": 10, "activityName": "Bang Kapi Running", "activityType": {"typeKey": "running"},
+     "duration": 180, "distance": 390, "calories": 33},
+    {"activityId": 9, "activityName": "Bang Kapi Running", "activityType": {"typeKey": "running"},
+     "duration": 1219, "distance": 2800, "calories": 261}])
+ok("title: same-day fragments get DISTINCT titles (was 3x identical)",
+   sorted(_T["cap"]) == ["Recovery Run 0.4k", "Tempo Run 2.8k"])
+
+# The real data-loss risk of renaming: two identical activities on one day produce the SAME
+# label. Both carry a Garmin id, and _is_dup only name-matches rows WITHOUT an id, so the
+# second must still be created.
+_T["cap"], _T["rows"] = [], []
+main._run_subtype = lambda aid: None
+_twin = {"activityName": "Treadmill Running", "activityType": {"typeKey": "treadmill_running"},
+         "duration": 1800, "distance": 5000, "calories": 400}
+main._log_training("2026-09-01", [dict(_twin, activityId=41), dict(_twin, activityId=42)])
+ok("title: two identical workouts -> identical labels but BOTH rows created (no data loss)",
+   _T["cap"] == ["Run 5k (Treadmill)", "Run 5k (Treadmill)"])
+
+# Renaming history must not make the cron re-create rows it already has: a legacy row still
+# titled the old Garmin way (and with no activity id) has to be recognised.
+_T["cap"] = []
+_T["rows"] = [{"properties": {"session": {"title": [{"plain_text": "Khlong Toei Running"}]},
+                              "distance_km": {"number": 5.0},
+                              "duration": {"rich_text": [{"plain_text": "30:00"}]},
+                              "garmin_activity_id": {"rich_text": []}}}]
+main._log_training("2026-09-01", [
+    {"activityId": 77, "activityName": "Khlong Toei Running",
+     "activityType": {"typeKey": "running"}, "duration": 1800, "distance": 5000, "calories": 400}])
+ok("title: legacy OLD-named row still dedups after the rename (no duplicate)", _T["cap"] == [])
+
+main.client, main._run_subtype, main._notion, main._replace_table, main.TRAINING_DS = (
+    _sv_cl2, _sv_sub2, _sv_not2, _sv_rt2, _sv_ds2)
+
+# `run` = Garmin gave no intensity label. Unknown must not be dressed up as "Easy".
+ok("run: NO Garmin label -> plain `Run`, never `Easy Run` (unknown != easy)",
+   main._activity_label([{"activityName": "Bang Kapi Running",
+                          "activityType": {"typeKey": "running"},
+                          "distance": 3020, "duration": 1158}]).startswith("Run "))
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
