@@ -668,6 +668,7 @@ def _log_training(d, acts):
         return False
     made = 0
     failed = 0
+    degraded = []
     for a in acts:
         raw = a.get("activityName") or ((a.get("activityType") or {}).get("typeKey") or "activity")
         # Title = the SAME label that goes on the food row (_activity_label), so TrainingLog and
@@ -731,12 +732,21 @@ def _log_training(d, acts):
                     _create({k: v for k, v in props.items() if k not in _drop})
                     made += 1
                     ok = True
+                    degraded.append("+".join(_drop))
                     break
                 except Exception:
                     pass
             if not ok:
                 failed += 1
-    return {"created": made, "failed": failed}
+    out = {"created": made, "failed": failed}
+    if degraded:
+        # The ladder exists for a genuinely older schema, but a PERMANENTLY missing property
+        # used to degrade silently forever - garmin_activity_id was absent from Notion for
+        # months, so id-based dedup never once ran and every row fell back to name matching
+        # (which is what made renaming rows risky). Surfacing it turns a silent permanent
+        # downgrade into something the closeday response actually shows.
+        out["degraded"] = sorted(set(degraded))
+    return out
 
 
 def _recovery_props(d):

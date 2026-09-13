@@ -854,5 +854,34 @@ ok("run: NO Garmin label -> plain `Run`, never `Easy Run` (unknown != easy)",
                           "activityType": {"typeKey": "running"},
                           "distance": 3020, "duration": 1158}]).startswith("Run "))
 
+# A permanently-missing Notion property must not degrade SILENTLY forever.
+_sv_n3, _sv_rt3, _sv_ds3, _sv_sub3 = (
+    main._notion, main._replace_table, main.TRAINING_DS, main._run_subtype)
+_D = {"drop": "garmin_activity_id"}
+def _d_notion(method, path, body=None, ver=None):
+    if "query" in path:
+        return {"results": []}
+    if method == "POST" and path == "/pages":
+        if _D["drop"] in body.get("properties", {}):
+            raise RuntimeError("garmin_activity_id is not a property that exists")
+        return {"id": "row-fake"}
+    return {}
+main._notion = _d_notion
+main._replace_table = lambda *a, **k: None
+main.TRAINING_DS = "ds-fake"
+main._run_subtype = lambda aid: None
+_act = [{"activityId": 5, "activityName": "R", "activityType": {"typeKey": "running"},
+         "duration": 1800, "distance": 5000, "calories": 400}]
+_res = main._log_training("2026-09-01", _act)
+ok("degrade: row is still created when a property is missing",
+   _res["created"] == 1 and _res["failed"] == 0)
+ok("degrade: the downgrade is REPORTED, not silent",
+   _res.get("degraded") == ["garmin_activity_id"])
+_D["drop"] = "__none__"
+_res = main._log_training("2026-09-01", _act)
+ok("degrade: a healthy schema reports no degradation", "degraded" not in _res)
+main._notion, main._replace_table, main.TRAINING_DS, main._run_subtype = (
+    _sv_n3, _sv_rt3, _sv_ds3, _sv_sub3)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
