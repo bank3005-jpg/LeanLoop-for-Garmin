@@ -272,7 +272,9 @@ def _clr_fail(m,p,pl,v):
     return {"results":[]}
 main._notion=_clr_fail; main._notion_write=lambda m,p,pl:{"id":"x"}
 main._find_row=lambda d:{"id":"pg","properties":{"kcal":{"number":1}}}
-_r=main.foodlog_upsert(meals=[])
+# an intentional clear now carries allow_remove (the loss-guard owns the un-flagged case);
+# what this still proves is that a FAILED clear never reports success.
+_r=main.foodlog_upsert(meals=[], allow_remove=True)
 ok("FF food CLEAR discovery-fail = top-level error, not cleared", "error" in _r and _r.get("status")=="partial-failure")
 
 # Test 2 — Weight CLEAR discovery failure -> clear-failed (never lifts-cleared)
@@ -882,6 +884,67 @@ _res = main._log_training("2026-09-01", _act)
 ok("degrade: a healthy schema reports no degradation", "degraded" not in _res)
 main._notion, main._replace_table, main.TRAINING_DS, main._run_subtype = (
     _sv_n3, _sv_rt3, _sv_ds3, _sv_sub3)
+
+# ------------------------------------------- foodlog_upsert must not silently drop meals
+# Real incident: two chats open on the same day. The second chat held a stale copy and its write
+# deleted the meals the first chat had logged.
+_sv_fr, _sv_pm, _sv_nw, _sv_rt, _sv_fds = (
+    main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS)
+_SAVED = [["09:30", "ซาวโดว์", 270, 10, 44, 5],
+          ["12:45", "เวย์ 2 scoop", 300, 50, 10, 4],
+          ["20:10", "มันเผา", 200, 2.5, 45, 0.3]]
+main.FOODLOG_DS = "ds-fake"
+main._find_row = lambda d: {"id": "page-fake"}
+main._parse_meals = lambda pid: [list(m) for m in _SAVED]
+_written = {"n": 0}
+def _nw(method, path, body=None, ver=None):
+    _written["n"] += 1
+    return {}
+main._notion_write = _nw
+main._replace_table = lambda *a, **k: None
+
+# the stale chat only knows the morning meal, and adds one of its own
+_stale = [["09:30", "ซาวโดว์", 270, 10, 44, 5],
+          ["21:00", "นม", 180, 30, 12, 1]]
+_written["n"] = 0
+_r = main.foodlog_upsert(date="2026-09-15", meals=_stale)
+ok("meals: a stale list that would delete meals is REJECTED", _r.get("error") == "would-drop-meals")
+ok("meals: nothing was written on rejection", _written["n"] == 0)
+ok("meals: it names exactly which meals would be lost",
+   sorted(m[0] for m in _r.get("dropped", [])) == ["12:45", "20:10"])
+ok("meals: the real saved day comes back so the caller can self-heal",
+   len(_r.get("current_meals", [])) == 3)
+
+# merging first -> allowed
+_merged = [list(m) for m in _SAVED] + [["21:00", "นม", 180, 30, 12, 1]]
+_r = main.foodlog_upsert(date="2026-09-15", meals=_merged)
+ok("meals: the correctly MERGED list saves fine", _r.get("status") == "updated")
+
+# editing a meal's numbers is not a delete
+_edit = [list(m) for m in _SAVED]; _edit[1] = ["12:45", "เวย์ 2 scoop", 150, 25, 5, 2]
+_r = main.foodlog_upsert(date="2026-09-15", meals=_edit)
+ok("meals: fixing an item's kcal/macros is NOT treated as a removal", _r.get("status") == "updated")
+
+# a real removal needs to be explicit
+_rm = [m for m in _SAVED if m[0] != "20:10"]
+_r = main.foodlog_upsert(date="2026-09-15", meals=_rm)
+ok("meals: a genuine removal is blocked without the flag", _r.get("error") == "would-drop-meals")
+_r = main.foodlog_upsert(date="2026-09-15", meals=_rm, allow_remove=True)
+ok("meals: ...and goes through WITH allow_remove", _r.get("status") == "updated")
+_r = main.foodlog_upsert(date="2026-09-15", meals=[], allow_remove=True)
+ok("meals: clearing the day still works when explicit", _r.get("status") == "updated")
+
+# unknown != empty: if the saved table can't be read, refuse rather than overwrite blind
+def _boom(pid):
+    raise RuntimeError("notion 502")
+main._parse_meals = _boom
+_written["n"] = 0
+_r = main.foodlog_upsert(date="2026-09-15", meals=_stale)
+ok("meals: unreadable saved table -> refuse, never overwrite blind",
+   "cannot-verify-existing-meals" in str(_r.get("error", "")) and _written["n"] == 0)
+
+main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS = (
+    _sv_fr, _sv_pm, _sv_nw, _sv_rt, _sv_fds)
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

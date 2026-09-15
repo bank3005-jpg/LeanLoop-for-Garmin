@@ -1420,6 +1420,19 @@ def _parse_meals(page_id):
     return newest
 
 
+def _meal_key(m):
+    """Identity of a meal row for loss-detection. Time + the head of the name: stable enough that
+    editing an item's kcal/macros is NOT seen as a delete, strict enough that a genuinely different
+    item is."""
+    return (str(m[0]).strip(), str(m[1]).strip()[:24].lower())
+
+
+def _dropped_meals(existing, incoming):
+    """Meals that exist on the page but are absent from the list about to replace it."""
+    inc = {_meal_key(m) for m in incoming}
+    return [m for m in existing if _meal_key(m) not in inc]
+
+
 _REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
 
 
@@ -1504,9 +1517,16 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                    exercise_burn: float | None = None,
                    tdee_est: float | None = None,
                    meals: list | str | None = None,
-                   meal_note: str | None = None) -> dict:
+                   meal_note: str | None = None,
+                   allow_remove: bool = False) -> dict:
     """Create or update the Notion FoodLog row for a date (one row per day, exact match — never creates duplicates). Only provided fields are written; omitted fields stay unchanged.
     meals: the FULL day's meals so far — either a native array or a JSON string, each element ["HH:MM","dish",kcal,p,c,f] (both accepted). The server rebuilds a clean meal table on the day page and recomputes kcal/p/c/f from it, so send the whole running list on every add/edit/remove. On a meal write the response echoes `meals` (the FULL saved day, sorted) + `totals` — ALWAYS render that whole table, never only the item just added.
+    SAFE BY DEFAULT: a meals write that would REMOVE any meal already saved is REJECTED with
+    `error: "would-drop-meals"` plus `current_meals` (the real saved day) — merge those with your new
+    items and resend. This is what stops a second chat, holding a stale copy of the day, from wiping
+    meals the first chat logged. Deliberately deleting a meal or clearing the day? Resend with
+    allow_remove=true.
+    allow_remove: set true ONLY when the user actually asked to remove/clear something.
     date=YYYY-MM-DD, default today."""
     d = day(date)
     parsed_meals = None
@@ -1601,6 +1621,25 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
     try:
         row = _find_row(d)
         if row:
+            if parsed_meals is not None and not allow_remove:
+                # A meals write REPLACES the whole table. Two chats open on the same day means one of
+                # them can hold a stale copy; writing it blind silently deletes whatever the other
+                # chat logged. Verify first, and hand the caller the real day so it can self-heal.
+                try:
+                    _cur = _parse_meals(row["id"])
+                except Exception as _e:
+                    return {"date": d, "error": f"cannot-verify-existing-meals: {_e}",
+                            "hint": "Could not read the saved meal table, so this write cannot be "
+                                    "proven safe (UNKNOWN is not empty). Retry; if it keeps failing, "
+                                    "read the day with foodlog_read and resend the merged list."}
+                _gone = _dropped_meals(_cur, parsed_meals)
+                if _gone:
+                    return {"date": d, "error": "would-drop-meals",
+                            "dropped": _gone, "current_meals": _cur,
+                            "hint": "This list is missing meals that are already saved (another chat "
+                                    "may have logged them). MERGE `current_meals` with your new items "
+                                    "and resend the full day. If the user really asked to remove them, "
+                                    "resend the same list with allow_remove=true."}
             if props:
                 _notion_write("PATCH", "/pages/" + row["id"], {"properties": props})
             res = {"date": d, "status": "updated", "page_id": row["id"],
