@@ -45,6 +45,9 @@ Every time, it shows your **whole day as a table** (meals + total + your target)
 - **Mid-session:** "done with squats — what's next?" / "สควอทเสร็จ ต่อท่าไหน"
 - 💡 Log the **actual kg** on your main lifts — that's what lets progression work.
 
+### 📱 At a glance, without opening a chat
+- If you set `WIDGET_KEY` during setup, today's **kcal + protein/carb/fat vs target** are served at a private URL — put an iOS **Scriptable** widget (`widget/scriptable-today.js`) on your home screen and the numbers are just *there*. Read-only; you still log by chatting.
+
 ### 🧬 Body scans (InBody / DEXA)
 - 📸 send a photo of your scan → it saves every number, updates your targets, and pushes it to Garmin.
 - **Do scans morning + fasted** (before food/water/training). An evening scan reads ~2–3% higher — don't panic at it; only compare same-condition scans.

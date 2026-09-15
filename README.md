@@ -32,6 +32,8 @@ Because all of it already flows to Claude, there's **no more screenshotting dash
 | 🔥 | **Progress you can see** | Cumulative deficit (≈ kg of fat) updated nightly right on your Notion food log |
 | 🏃 | **Coaching on real data** | One-call readiness verdicts, post-workout analysis (splits, HR zones, sleep context), weekly reviews, injury pattern tracking |
 | 🏋️ | **Strength tracking + progression** | Log lifts in plain speech (with optional **RIR**/effort) → a clean per-exercise table with volume + estimated 1RM; the coach reads your last session, sees the trend, and prescribes the next load like a trainer |
+| 📊 | **Fast strength history** | Every lift is mirrored into a flat Notion DB, so "what did I press last time?" is ONE query instead of opening a month of day-pages — the load table stays on the page too, so nothing depends on it |
+| 📱 | **Phone/watch widget** | Optional read-only endpoint serving today's kcal + macros vs target — point an iOS Scriptable widget at it and see your remaining calories from the home screen, no app to open |
 | 📈 | **Second-by-second analysis** | FIT-file parsing: HR/pace/cadence streams + **aerobic decoupling** — the endurance metric real coaches use |
 | ⚖️ | **Calibration loop** | Every 2 weeks: logged deficit vs. actual weight change reveals your personal estimation bias, which corrects all future estimates |
 | 🔄 | **Live-updating brain** | Coaching rules live in [`playbook.md`](playbook.md), fetched by your server at runtime — improvements reach every user instantly, no reinstall |
@@ -63,14 +65,15 @@ Claude (any device, incl. phone)
          ├── your Notion      ← food / training / body logs
          └── playbook.md      ← coaching rules, served live from GitHub
    Cloud Scheduler → nightly close-day job + keep-warm pings
+   GET /<WIDGET_KEY>/today → phone home-screen widget (optional, read-only)
 ```
 
 **Privacy by design:** everything runs in *your* accounts. No third party — including this repo's author — ever sees your data. The server is protected by a long random secret; Garmin credentials never pass through chat.
 
-## 🧰 What's inside (21 lean MCP tools)
+## 🧰 What's inside (23 lean MCP tools)
 
 **Health** `get_wellness(metric)` — sleep, HRV, stress, body battery, heart rate, SpO2, respiration, intensity minutes, hydration, blood pressure, body composition, training readiness/status · `get_daily_summary`
-**Training** `get_activities` (recent or date range) · `get_activity(id, view)` — summary, splits, HR zones, FIT streams, aerobic decoupling · `get_fitness(metric)` — VO2max, race predictions, endurance/hill scores, lactate threshold, PRs, fitness age · `get_coach_snapshot` (one-call verdict data) · `analyze_activity` (one-call post-workout bundle) · `weekly_report` / `calibrate_report` (pre-computed reviews) · `traininglog_read` (Notion actuals: runs + weight lift tables)
+**Training** `get_activities` (recent or date range) · `get_activity(id, view)` — summary, splits, HR zones, FIT streams, aerobic decoupling · `get_fitness(metric)` — VO2max, race predictions, endurance/hill scores, lactate threshold, PRs, fitness age · `get_coach_snapshot` (one-call verdict data) · `analyze_activity` (one-call post-workout bundle) · `weekly_report` / `calibrate_report` (pre-computed reviews) · `traininglog_read` (Notion actuals: runs + weight lift tables) · `lift_history(exercise, weeks)` (one fast query for a single lift's full history — loads, RIR, volume, e1RM, oldest→newest) · `lift_backfill` (one-time import of past sessions into the flat Lifts DB)
 **Body** `get_weight_history` · `add_body_composition` (**write** InBody/DEXA scans into Garmin)
 **System** `foodlog_read` / `foodlog_upsert` (direct Notion food log, meal-by-meal history) · `get_config` / `foodlib_find` / `foodlib_upsert` / `exercise_find` (fast server-side Notion reads, dedup foods into your library) · `weightlog_upsert` (log a lift session) · `get_today` (server date/time — anchor dated actions) · `get_playbook` (live coaching rules)
 

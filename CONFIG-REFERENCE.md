@@ -17,6 +17,8 @@ CALIBRATION|bias_kcal_per_day=0 (updated by 'calibrate' every ~2 weeks)|last_cal
 COMMON|myshake=190/35p/9c/3f|<other foods you log often, as shorthand>
 ATHLETE|<durable coaching notes about you — habits to watch, weaknesses, patterns the coach should remember>
 PLAN|block=my_block|Mon=Legs A|Tue=Push+easy run|Wed=Tempo|Thu=Pull+easy run|Fri=Legs B|Sat=Long run|Sun=rest|rule=<scheduling notes>|pace=<your run paces>|cue=<form cues>
+EXERCISES (the actual lifts per session — the coach prescribes ONLY from this list)|legs_A=Back Squat 4x5-8(⭐ main, do first) · Reverse Lunge 3x8-10/side · Leg Press 3x10-12|push=Incline Barbell Press 3x8-10(⭐ e1RM tracker, do first) · Machine Chest Press 3-4x8-12 · ...|swap_rule=cover every lift in this list within the week; never invent one that isn't here
+CALIB_MACHINE|baseline scan = <which InBody machine / gym>|rule=body-fat deltas are valid ONLY same-machine + morning-fasted; changed gyms? RE-BASELINE (one fresh anchor scan) instead of comparing across machines
 ```
 
 ## What each line does
@@ -28,8 +30,16 @@ PLAN|block=my_block|Mon=Legs A|Tue=Push+easy run|Wed=Tempo|Thu=Pull+easy run|Fri
 - **COMMON** — shorthand for foods you eat a lot, so logging is instant.
 - **ATHLETE** — durable notes the coach keeps about you (e.g. "skips breakfast", "easy runs too hard"). Coaching memory, not history.
 - **PLAN** — your weekly training template (weekday -> session). The coach reads today's session from here and checks adherence. Update it when your goal shifts.
+- **EXERCISES** — the actual lifts for each session, with sets x reps. **This is what the coach prescribes from** — see the warning below. Put them in the order they should be performed and mark your ⭐ tracker lift.
+- **CALIB_MACHINE** — which body-scan device your baseline came from. Every InBody/DEXA has its own systematic bias, so a fat-mass change measured across two different machines is meaningless. Change gyms and this line stops you calibrating off a bogus delta.
 
 ## How it stays current
 On every new InBody scan, the coach updates PROFILE, recomputes the TDEE baseline (BMR x activity factor), resets the floor to your BMR, and re-checks protein — all in one edit. **You don't do the math; just send the scan photo.**
 
-The **detailed exercise list** for each day (which lifts, sets, reps) lives on a separate **Training Plan** page, not in Config — Config's `PLAN` line only maps weekday -> session name.
+## ⚠️ The `EXERCISES` line is NOT optional
+
+It is tempting to keep the exercise list only on a human-readable **Training Plan** page in Notion and have `PLAN` just map weekday -> session name. **Don't** — no tool can read a free-form Notion page, so the coach cannot see which lifts you actually do. It then invents plausible-but-off-plan exercises, which is confusing and wrecks progression tracking. (This was a real bug in the author's own setup.)
+
+**Config's `EXERCISES` line is the authoritative copy the coach prescribes from.** A Training Plan page is still useful as *your* readable mirror (form cues, notes) — just treat it as a mirror: **whenever one changes, change the other in the same action**, or the coach prescribes from a stale list.
+
+The order of exercises within a session is meaningful too — list them in the order they should be performed, and mark your progression-tracker lift (⭐) so the coach knows to program it FIRST, while you're fresh. A tracker lift done last reads as a plateau when it is really just fatigue.
