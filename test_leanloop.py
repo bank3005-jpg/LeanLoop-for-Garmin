@@ -957,8 +957,8 @@ ok("meal write ships a render directive back with the result", "render_required"
 ok("...it states the exact row count so a summary can't pass",
    "2 meal row(s)" in _r.get("render_required",""))
 ok("...it names the one-liner as a bug", "BUG" in _r.get("render_required",""))
-ok("...and caps the item column so the numbers stay on screen",
-   "28 characters" in _r.get("render_required",""))
+ok("...and says to keep the meal's FULL name (no truncating)",
+   "FULL name" in _r.get("render_required",""))
 _r = main.foodlog_upsert(date="2026-09-19", kcal=2000)
 ok("a non-meal write (kcal only) gets no directive", "render_required" not in _r)
 main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS = _sv

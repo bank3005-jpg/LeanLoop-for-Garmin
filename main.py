@@ -1443,8 +1443,7 @@ def _render_directive(meals):
     return (f"RENDER THE FULL DAY TABLE NOW: {n} meal row(s) + bold รวม + Target. "
             "A one-line summary (รวมล่าสุด / อัปเดตแล้ว รวม X kcal / p.. c.. f..) is a BUG — "
             "including on a one-item edit, and including when you rendered the table moments ago. "
-            "Keep every รายการ cell under ~28 characters (truncate with …) so the kcal/p/c/f columns stay "
-            "on screen on a phone — the full name is already saved in Notion.")
+            "Use each meal's FULL name — do not shorten or truncate it.")
 
 
 _REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
