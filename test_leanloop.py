@@ -946,5 +946,22 @@ ok("meals: unreadable saved table -> refuse, never overwrite blind",
 main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS = (
     _sv_fr, _sv_pm, _sv_nw, _sv_rt, _sv_fds)
 
+# ---------------------------------------- every meal write carries its own render directive
+_sv = (main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS)
+main.FOODLOG_DS = "ds-fake"; main._find_row = lambda d: {"id": "pg"}
+main._parse_meals = lambda pid: []
+main._notion_write = lambda *a, **k: {}
+main._replace_table = lambda *a, **k: None
+_r = main.foodlog_upsert(date="2026-09-19", meals=[["08:00","a",100,1,1,1],["09:00","b",200,2,2,2]])
+ok("meal write ships a render directive back with the result", "render_required" in _r)
+ok("...it states the exact row count so a summary can't pass",
+   "2 meal row(s)" in _r.get("render_required",""))
+ok("...it names the one-liner as a bug", "BUG" in _r.get("render_required",""))
+ok("...and caps the item column so the numbers stay on screen",
+   "28 characters" in _r.get("render_required",""))
+_r = main.foodlog_upsert(date="2026-09-19", kcal=2000)
+ok("a non-meal write (kcal only) gets no directive", "render_required" not in _r)
+main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS = _sv
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

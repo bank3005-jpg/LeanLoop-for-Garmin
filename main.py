@@ -1433,6 +1433,20 @@ def _dropped_meals(existing, incoming):
     return [m for m in existing if _meal_key(m) not in inc]
 
 
+def _render_directive(meals):
+    """Shipped back on every meal write. "Render the full day table" has been in the playbook for a
+    long time and STILL degrades into a one-line `รวมล่าสุด: X kcal ...` after a quick edit — a rule
+    read far earlier in the conversation loses to the urge to be brief. Putting the instruction in
+    the tool RESULT puts it in front of the model at the moment it is about to answer, which is the
+    one place it reliably survives."""
+    n = len(meals)
+    return (f"RENDER THE FULL DAY TABLE NOW: {n} meal row(s) + bold รวม + Target. "
+            "A one-line summary (รวมล่าสุด / อัปเดตแล้ว รวม X kcal / p.. c.. f..) is a BUG — "
+            "including on a one-item edit, and including when you rendered the table moments ago. "
+            "Keep every รายการ cell under ~28 characters (truncate with …) so the kcal/p/c/f columns stay "
+            "on screen on a phone — the full name is already saved in Notion.")
+
+
 _REC_KEYS = ("sleep_score", "sleep_hrs", "hrv", "rhr", "body_battery_change", "readiness")
 
 
@@ -1653,6 +1667,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             if parsed_meals is not None and "meals" in res["wrote"]:
                 res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
                 res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
+                res["render_required"] = _render_directive(parsed_meals)
             return res
         title = _day_title(d)
         full_props = {"day": {"title": [{"text": {"content": title}}]},
@@ -1677,6 +1692,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         if parsed_meals is not None and "meals" in res["wrote"]:
             res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
             res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
+            res["render_required"] = _render_directive(parsed_meals)
         return res
     except Exception as e:
         return {"error": str(e)}
