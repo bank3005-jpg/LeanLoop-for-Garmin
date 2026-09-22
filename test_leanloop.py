@@ -963,5 +963,29 @@ _r = main.foodlog_upsert(date="2026-09-19", kcal=2000)
 ok("a non-meal write (kcal only) gets no directive", "render_required" not in _r)
 main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS = _sv
 
+# ------------------------------------- a dated write carries the server's real today with it
+# The midnight trap: a chat opened last night keeps writing to yesterday's date.
+_sv = (main._find_row, main._parse_meals, main._notion_write, main._replace_table,
+       main.FOODLOG_DS, main._today_local)
+main.FOODLOG_DS = "ds-fake"; main._find_row = lambda d: {"id": "pg"}
+main._parse_meals = lambda pid: []
+main._notion_write = lambda *a, **k: {}
+main._replace_table = lambda *a, **k: None
+import datetime as _dt
+main._today_local = lambda: _dt.date(2026, 9, 22)
+
+_r = main.foodlog_upsert(date="2026-09-22", meals=[["10:00","whey",150,25,5,2]])
+ok("write to TODAY -> server_today reported, no warning",
+   "2026-09-22" in _r.get("server_today","") and "date_check" not in _r)
+
+_r = main.foodlog_upsert(date="2026-09-21", meals=[["10:00","whey",150,25,5,2]])
+ok("write to a STALE date -> loud date_check", "date_check" in _r)
+ok("...it names both dates so the mismatch is unmissable",
+   "2026-09-21" in _r["date_check"] and "2026-09-22" in _r["date_check"])
+ok("...and calls out the across-midnight case", "midnight" in _r["date_check"])
+
+main._find_row, main._parse_meals, main._notion_write, main._replace_table, \
+    main.FOODLOG_DS, main._today_local = _sv
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

@@ -1433,6 +1433,24 @@ def _dropped_meals(existing, incoming):
     return [m for m in existing if _meal_key(m) not in inc]
 
 
+def _date_stamp(res, d):
+    """Stamp every dated WRITE with the server's real today, and shout when they differ.
+
+    A chat left open across midnight is the killer: the model anchors the date when the
+    conversation starts and keeps writing to it, so a 10:00 breakfast lands on yesterday. The
+    playbook already says to re-anchor before each dated write and it still happened - so the
+    check now rides along with the write itself, where it cannot be forgotten."""
+    today = day("")
+    res["server_today"] = _day_title(today)
+    if d != today:
+        res["date_check"] = (
+            f"!! WROTE TO {_day_title(d)} BUT SERVER TODAY IS {_day_title(today)}. "
+            "That is correct ONLY if the user explicitly meant a past/other day. If this chat has "
+            "been open a while (e.g. across midnight) you are probably writing to a stale date - "
+            "say so and move the entry before telling him it is saved.")
+    return res
+
+
 def _render_directive(meals):
     """Shipped back on every meal write. "Render the full day table" has been in the playbook for a
     long time and STILL degrades into a one-line `รวมล่าสุด: X kcal ...` after a quick edit — a rule
@@ -1667,6 +1685,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                 res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
                 res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
                 res["render_required"] = _render_directive(parsed_meals)
+                _date_stamp(res, d)
             return res
         title = _day_title(d)
         full_props = {"day": {"title": [{"text": {"content": title}}]},
@@ -1692,6 +1711,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             res["meals"] = parsed_meals   # FULL saved day — coach renders the WHOLE table, never just the new item
             res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
             res["render_required"] = _render_directive(parsed_meals)
+            _date_stamp(res, d)
         return res
     except Exception as e:
         return {"error": str(e)}
@@ -1924,6 +1944,7 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
                 "total_volume": total_vol, "error": str(e)}
     out = {"date": d, "session": sess, "page_id": row_id, "status": "saved",
            "lifts": len(parsed), "total_volume": total_vol}
+    _date_stamp(out, d)
     if _lbl == "labelled":
         out["foodlog_label"] = sess
     try:  # Phase2: sync flat Lifts DB (read cache). Page table above is the durable copy -> a DB
