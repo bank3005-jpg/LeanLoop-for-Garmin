@@ -653,7 +653,7 @@ def _log_training(d, acts):
         name-substring + distance (never duration alone — two different workouts can share a duration)."""
         aid = str(aid) if aid else ""
         for e in existing:
-            if aid and e.get("gid") and aid == e["gid"]:
+            if aid and e.get("gid") and aid in _gids(e["gid"]):  # a session row may carry several ids
                 return True
         n = (name or "").lower().strip()
         for e in existing:
@@ -2145,7 +2145,7 @@ def get_activities(start_date: str = "", end_date: str = "", limit: int = 10,
 def get_activity(activity_id: str, view: str = "summary",
                  metrics: str = "heart_rate,speed,cadence", max_points: int = 60,
                  skip_warmup_min: float = 5.0) -> dict | list:
-    """One activity, one view. view = summary (cadence/power/dynamics/weather) | splits (per-km pace/HR) | hr_zones (time per HR zone) | stream (downsampled FIT sensor series; metrics/max_points apply) | decoupling (Pa:Hr aerobic drift, steady sessions only; skip_warmup_min applies) | pacing (walk/pause detection from FIT: true running pace excluding walks, walk seconds per km, first-vs-second-half fade — use when overall pace may be misleading). Get activity_id from get_activities."""
+    """One activity, one view. view = summary (cadence/power/dynamics/weather) | splits (per-km pace/HR) | hr_zones (time per HR zone) | stream (downsampled FIT sensor series; metrics/max_points apply) | decoupling (Pa:Hr aerobic drift, steady sessions only; skip_warmup_min applies) | pacing (walk/pause detection from FIT: true running pace excluding walks, walk seconds per km, first-vs-second-half fade — use when overall pace may be misleading) | sets (Strength activities: every ACTIVE set in order — set_no, exercise mapped to the plan name, reps, weight_kg (null = none typed), duration; unmapped lifts flagged). Get activity_id from get_activities."""
     v = view.strip().lower()
     if v == "summary":
         return get_activity_details(activity_id)
@@ -2159,7 +2159,417 @@ def get_activity(activity_id: str, view: str = "summary",
         return get_aerobic_decoupling(activity_id, skip_warmup_min)
     if v == "pacing":
         return get_activity_pacing(activity_id)
-    return {"error": f"unknown view '{view}'", "valid": ["summary", "splits", "hr_zones", "stream", "decoupling", "pacing"]}
+    if v == "sets":
+        return get_activity_sets(activity_id)
+    return {"error": f"unknown view '{view}'", "valid": ["summary", "splits", "hr_zones", "stream", "decoupling", "pacing", "sets"]}
+
+
+# ---------------------------------------------------------------- Garmin per-set strength import
+# Bank logs weights with the watch's Strength activity (types the weight + fixes reps on the watch),
+# so the per-set truth lives in Garmin's exerciseSets. These helpers turn that into the SAME lift
+# rows the chat path writes (one row per working set — the convention his history already uses),
+# so lift_history / e1RM keep working with no special case.
+
+# Garmin exercise enum (exercises[].name, else .category) -> the name used in Config EXERCISES.
+# Exact enum first, then keyword rules. Everything else stays RAW + unmapped: a lift is never
+# guessed into the plan. Extend without a deploy via a Config line:
+#   GARMIN_MAP|GARMIN_ENUM=Plan Name|OTHER_ENUM=Other Name
+_GARMIN_EX_MAP = {
+    "INCLINE_BARBELL_BENCH_PRESS": "Incline Barbell Press",
+    "BARBELL_BACK_SQUAT": "Back Squat",
+    "BARBELL_FRONT_SQUAT": "Front Squat",
+    "SMITH_MACHINE_SQUAT": "Smith Machine Back Squat",
+    "LEG_PRESS": "Leg Press",
+    "BARBELL_REVERSE_LUNGE": "Reverse Lunge",
+    "DUMBBELL_REVERSE_LUNGE": "Reverse Lunge",
+    "REVERSE_LUNGE": "Reverse Lunge",
+    "ROMANIAN_DEADLIFT": "Romanian Deadlift (RDL)",
+    "BARBELL_ROMANIAN_DEADLIFT": "Romanian Deadlift (RDL)",
+    "BARBELL_HIP_THRUST_WITH_BENCH": "Hip Thrust",
+    "BARBELL_HIP_THRUST_ON_FLOOR": "Hip Thrust",
+    "LYING_LEG_CURL": "Lying Leg Curl",
+    "LEG_CURL": "Lying Leg Curl",
+    "SINGLE_LEG_STANDING_CALF_RAISE": "Single-Leg Calf Raise (riser)",
+    "SINGLE_LEG_CALF_RAISE": "Single-Leg Calf Raise (riser)",
+    "LAT_PULLDOWN": "Lat Pulldown",
+    "INCLINE_DUMBBELL_BICEPS_CURL": "Incline DB Curl",
+    "SEATED_CABLE_ROW": "Cable Row",
+    "T_BAR_ROW": "Chest-Supported T-Bar Row",
+}
+# (all substrings must appear, none of the excluded) -> plan name. Checked in order.
+_GARMIN_EX_RULES = (
+    (("INCLINE", "BENCH_PRESS"), ("DUMBBELL", "SMITH"), "Incline Barbell Press"),
+    (("CHEST_PRESS",), (), "Machine Chest Press"),
+    (("SHOULDER_PRESS", "MACHINE"), (), "Machine Shoulder Press"),
+    (("LATERAL_RAISE", "CABLE"), (), "Cable Lateral Raise"),
+    (("TRICEPS", "OVERHEAD", "CABLE"), (), "Single-Arm Cable OH Triceps Ext"),
+    (("SMITH", "SQUAT"), (), "Smith Machine Back Squat"),
+    (("BACK_SQUAT",), ("SMITH",), "Back Squat"),
+    (("FRONT_SQUAT",), ("SMITH",), "Front Squat"),
+    (("REVERSE_LUNGE",), (), "Reverse Lunge"),
+    (("ABDUCTION",), (), "Hip Abduction"),
+    (("ADDUCTION",), (), "Hip Adduction"),
+    (("LEG_PRESS",), (), "Leg Press"),
+    (("CALF_RAISE", "SINGLE_LEG"), (), "Single-Leg Calf Raise (riser)"),
+    (("ROMANIAN_DEADLIFT",), (), "Romanian Deadlift (RDL)"),
+    (("HIP_THRUST",), (), "Hip Thrust"),
+    (("LEG_CURL",), ("SEATED", "STANDING"), "Lying Leg Curl"),
+    (("ASSISTED", "PULL_UP"), (), "Assisted Pull-up Machine"),
+    (("ASSISTED", "CHIN_UP"), (), "Assisted Pull-up Machine"),
+    (("LAT_PULLDOWN",), (), "Lat Pulldown"),
+    (("T_BAR",), (), "Chest-Supported T-Bar Row"),
+    (("CABLE_ROW",), (), "Cable Row"),
+    (("REAR_DELT",), (), "Rear Delt Machine"),
+    (("REVERSE_FLY",), (), "Rear Delt Machine"),
+    (("INCLINE", "CURL"), (), "Incline DB Curl"),
+)
+
+
+def _config_garmin_map():
+    """User overrides from the Config `GARMIN_MAP|ENUM=Name|...` line (best-effort; {} on any failure)."""
+    try:
+        txt = get_config() or ""
+    except Exception:
+        return {}
+    out = {}
+    for line in str(txt).splitlines():
+        if not line.strip().upper().startswith("GARMIN_MAP"):
+            continue
+        for part in line.replace("\\|", "|").split("|")[1:]:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k.strip() and v.strip():
+                    out[k.strip().upper()] = v.strip()
+    return out
+
+
+def _map_garmin_exercise(name, category, overrides=None):
+    """-> (plan_name_or_raw, mapped_by). mapped_by: 'config' | 'exact' | 'rule' | None (=unmapped)."""
+    keys = [k for k in ((name or "").upper(), (category or "").upper()) if k]
+    ov = overrides or {}
+    for k in keys:
+        if k in ov:
+            return ov[k], "config"
+    for k in keys:
+        if k in _GARMIN_EX_MAP:
+            return _GARMIN_EX_MAP[k], "exact"
+    probe = "_" + "_".join(keys) + "_"
+    for need, never, plan in _GARMIN_EX_RULES:
+        if all(n in probe for n in need) and not any(x in probe for x in never):
+            return plan, "rule"
+    raw = keys[0] if keys else "UNKNOWN"
+    return raw.replace("_", " ").title(), None
+
+
+def _set_weight_kg(w):
+    """Garmin exerciseSets weight -> kg. The API reports GRAMS (40 kg = 40000.0); a value that is
+    already plausible kg is passed through. Missing / 0 / negative (bodyweight or not entered) ->
+    None — never 0, so 'no weight typed' can't masquerade as a real 0 kg set."""
+    try:
+        w = float(w)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0:
+        return None
+    kg = w / 1000.0 if w > 500 else w  # nobody here lifts 500 kg; >500 can only be grams
+    kg = round(kg, 2)
+    return int(kg) if kg == int(kg) else kg
+
+
+def _best_exercise(s):
+    ex = [e for e in (s.get("exercises") or []) if isinstance(e, dict)]
+    if not ex:
+        return None, None
+    top = max(ex, key=lambda e: e.get("probability") or 0)
+    return top.get("name"), top.get("category")
+
+
+def _parse_exercise_sets(raw, overrides=None):
+    """Garmin exerciseSets payload -> ACTIVE sets in time order, numbered 1..N (REST dropped)."""
+    sets = (raw or {}).get("exerciseSets") if isinstance(raw, dict) else raw
+    act = [s for s in (sets or []) if isinstance(s, dict) and str(s.get("setType") or "").upper() == "ACTIVE"]
+    act.sort(key=lambda s: (str(s.get("startTime") or ""), s.get("messageIndex") or 0))
+    out = []
+    for i, s in enumerate(act, 1):
+        nm, cat = _best_exercise(s)
+        plan, how = _map_garmin_exercise(nm, cat, overrides)
+        reps = s.get("repetitionCount")
+        row = {"set_no": i, "exercise": plan, "exercise_category": cat, "exercise_name": nm,
+               "reps": int(reps) if isinstance(reps, (int, float)) and reps >= 0 else None,
+               "weight_kg": _set_weight_kg(s.get("weight")),
+               "duration_s": round(float(s["duration"]), 1) if s.get("duration") is not None else None,
+               "start_time": s.get("startTime")}
+        if how is None:
+            row["unmapped"] = True
+        out.append(row)
+    return out
+
+
+def _garmin_raw(method, *args):
+    """Direct Garmin call (no slim/tabulate — callers need the real dicts); one fresh-login retry."""
+    global _garmin
+    try:
+        return getattr(client(), method)(*args)
+    except Exception:
+        _garmin = None
+        return getattr(client(), method)(*args)
+
+
+def get_activity_sets(activity_id: str) -> dict:
+    """Per-set strength detail for one Garmin Strength activity (weight x reps x exercise)."""
+    try:
+        raw = _garmin_raw("get_activity_exercise_sets", activity_id)
+    except Exception as e:
+        return {"error": f"exercise-sets-fetch-failed: {str(e)[:120]}"}
+    sets = _parse_exercise_sets(raw, _config_garmin_map())
+    out = {"activity_id": str(activity_id), "active_sets": len(sets),
+           "total_reps": sum(s["reps"] or 0 for s in sets), "sets": sets}
+    um = sorted({s["exercise"] for s in sets if s.get("unmapped")})
+    if um:
+        out["unmapped"] = um
+        out["unmapped_note"] = ("Not in the plan mapping — ask Bank which Config EXERCISES lift each one is, "
+                                "then pass rename={...} to lift_import_garmin and add it to Config GARMIN_MAP.")
+    if not sets:
+        out["note"] = "No ACTIVE sets — not a Strength activity, or the watch recorded no sets."
+    return out
+
+
+def _parse_rir(rir, n):
+    """RIR per ACTIVE set (1..n). Accepts a list [2,1,0,'w',...] or text
+    'set1=warmup, set2=1.5, set3-5=0' / '1=w;2-4=1' / 'all=1'. 'w'/'warmup'/'wu' = warm-up set.
+    Unspecified sets -> None. Returns list of number | None | 'warmup'. Raises ValueError."""
+    def _val(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        t = str(v).strip().lower()
+        if t in ("", "-", "none", "null"):
+            return None
+        if t in ("w", "wu", "warmup", "warm-up", "warm up", "วอร์ม"):
+            return "warmup"
+        return float(t)
+    if rir in (None, "", []):
+        return [None] * n
+    if isinstance(rir, str):
+        s = rir.strip()
+        if s.startswith("["):
+            import json as _j
+            rir = _j.loads(s)
+    if isinstance(rir, (list, tuple)):
+        if len(rir) != n:
+            raise ValueError(f"rir list has {len(rir)} values but the activity has {n} active sets")
+        return [_val(v) for v in rir]
+    out = [None] * n
+    import re as _re
+    for seg in _re.split(r"[,;\n]+", str(rir)):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if "=" not in seg:
+            raise ValueError(f"cannot read rir segment '{seg}' (use set2=1.5 or set3-5=0)")
+        k, v = seg.split("=", 1)
+        k = k.strip().lower().replace("set", "").replace("เซ็ต", "").strip()
+        if k in ("all", "*"):
+            idx = range(1, n + 1)
+        elif "-" in k:
+            a, b = (int(x) for x in k.split("-", 1))
+            idx = range(a, b + 1)
+        else:
+            idx = [int(k)]
+        for i in idx:
+            if not 1 <= i <= n:
+                raise ValueError(f"set {i} is out of range (activity has {n} active sets)")
+            out[i - 1] = _val(v)
+    return out
+
+
+def _same_lift(existing_name, imported):
+    """An existing table row is the SAME lift as an imported one -> it gets replaced, so a re-import
+    or a chat log of the same exercise can never double up ('Incline Barbell Press (set1)' too)."""
+    a, b = (existing_name or "").strip().lower(), (imported or "").strip().lower()
+    return bool(b) and (a == b or a.startswith(b + " (") or a.startswith(b + " set"))
+
+
+def _weight_rows(d):
+    rows = _notion_query_all(TRAINING_DS, {"and": [{"property": "date", "date": {"equals": d}},
+                                                   {"property": "type", "select": {"equals": "weights"}}]})
+    out = []
+    for r in rows:
+        p = r.get("properties", {})
+        out.append({"id": r["id"],
+                    "title": "".join(x.get("plain_text", "") for x in ((p.get("session") or {}).get("title") or [])).strip(),
+                    "gid": "".join(x.get("plain_text", "") for x in ((p.get("garmin_activity_id") or {}).get("rich_text") or [])),
+                    "props": p})
+    return out
+
+
+def _gids(s):
+    return [x.strip() for x in (s or "").replace(";", ",").split(",") if x.strip()]
+
+
+@mcp.tool()
+def lift_import_garmin(activity_id: str, session: str, rir: list | str | None = None,
+                       rename: dict | str | None = None) -> dict:
+    """Import a Garmin Strength activity's per-set weight x reps into TrainingLog (+ Lifts DB) —
+    no typing in chat. `session` = today's Config PLAN slot (Push / Pull / Legs A / Legs B).
+    `rir` = per ACTIVE set, as a list [2,1,0,0] or text 'set1=warmup, set2=1.5, set3-5=0'
+    (warm-up sets are NOT written — they never feed e1RM). Set numbers = `set_no` from
+    get_activity(view='sets'). `rename` = {GARMIN_ENUM or shown name: 'Plan Name'} for lifts the
+    mapping didn't know. MERGES into the day's session row: rows of the imported lifts are replaced,
+    every other lift already logged is kept — so re-importing the same activity never duplicates."""
+    if not TRAINING_DS:
+        return {"error": "NOTION_TRAININGLOG_DS not set"}
+    sess = (session or "").strip()
+    if not sess:
+        return {"error": "session is required — use today's Config PLAN slot (Push / Pull / Legs A / Legs B)"}
+    try:
+        det = _garmin_raw("get_activity", activity_id) or {}
+        raw = _garmin_raw("get_activity_exercise_sets", activity_id)
+    except Exception as e:
+        return {"error": f"garmin-fetch-failed: {str(e)[:120]}"}
+    summ = det.get("summaryDTO") or {}
+    tkey = ((det.get("activityTypeDTO") or det.get("activityType") or {}).get("typeKey") or "").lower()
+    if "strength" not in tkey:
+        return {"error": f"activity {activity_id} is '{tkey or 'unknown'}', not a Strength activity"}
+    start = str(summ.get("startTimeLocal") or det.get("startTimeLocal") or "")
+    d = start[:10] if len(start) >= 10 else day("")
+
+    ov = _config_garmin_map()
+    if rename:
+        try:
+            import json as _j
+            rn = _j.loads(rename) if isinstance(rename, str) else dict(rename)
+            ov.update({str(k).strip().upper().replace(" ", "_"): str(v).strip() for k, v in rn.items()})
+        except Exception:
+            return {"error": "rename must be {\"GARMIN_ENUM or shown name\": \"Plan Name\", ...}"}
+    sets = _parse_exercise_sets(raw, ov)
+    if not sets:
+        return {"error": "no ACTIVE sets in this activity — nothing to import", "date": d}
+    try:
+        rirs = _parse_rir(rir, len(sets))
+    except Exception as e:
+        return {"error": f"rir: {e}", "active_sets": len(sets)}
+
+    unmapped = [s for s in sets if s.get("unmapped")]
+    work, warm = [], []
+    for s, r in zip(sets, rirs):
+        if s.get("unmapped"):
+            continue
+        if r == "warmup":
+            warm.append(s["set_no"])
+            continue
+        # bodyweight / no weight typed -> 0 in the TABLE (keeps the reps; his history uses 0 = bodyweight)
+        kg = s["weight_kg"] if s["weight_kg"] is not None else 0
+        prev = work[-1] if work else None
+        # playbook convention: ONE row per lift while load+reps+RIR stay the same (40 3x8), a new row
+        # only when something changes (pyramid / drop) — consecutive identical sets collapse into one.
+        if prev and prev[0] == s["exercise"] and prev[1] == kg and prev[3] == s["reps"] and prev[4] == r:
+            prev[2] += 1
+        else:
+            work.append([s["exercise"], kg, 1, s["reps"], r])
+    if not work:
+        return {"error": "nothing to write (every set is a warm-up or unmapped)",
+                "unmapped": sorted({s["exercise"] for s in unmapped}), "date": d}
+
+    # ---- which TrainingLog row: the session row; adopt / retire the cron's bare row for this activity
+    try:
+        rows = _weight_rows(d)
+    except Exception as e:
+        return {"error": f"traininglog-query-failed: {str(e)[:100]}"}  # UNKNOWN != empty -> no blind write
+    aid = str(activity_id)
+    row_s = next((r for r in rows if r["title"].lower() == sess.lower()), None)
+    row_g = next((r for r in rows if aid in _gids(r["gid"])), None)
+    notes = {}
+    target = row_s or row_g
+    if row_s and row_g and row_g["id"] != row_s["id"]:
+        try:
+            bare = not _parse_lift_table(row_g["id"])
+        except Exception:
+            bare = False
+        if bare:  # the nightly cron's empty "Strength" row for this same workout -> retire it
+            try:
+                _notion("PATCH", f"/pages/{row_g['id']}", {"archived": True}, "2022-06-28")
+                notes["retired_duplicate_row"] = row_g["title"] or row_g["id"]
+            except Exception:
+                notes["duplicate_row"] = row_g["id"]
+        else:
+            notes["other_row_has_this_activity"] = row_g["title"] or row_g["id"]
+    if target and target["title"].lower() != sess.lower():
+        try:  # cron row titled "Strength" -> it IS the session; give it the plan name
+            _notion("PATCH", f"/pages/{target['id']}",
+                    {"properties": {"session": {"title": [{"text": {"content": sess[:200]}}]}}}, "2022-06-28")
+        except Exception as e:
+            return {"error": f"rename-row-failed: {str(e)[:100]}"}
+
+    # ---- merge with what is already logged (never drop a lift that came from somewhere else)
+    try:
+        existing = _parse_lift_table(target["id"]) if target else []
+    except Exception as e:
+        return {"error": f"cannot read the existing lift table ({e}) — refusing to overwrite it"}
+    names = {w[0] for w in work}
+    kept = [l for l in existing if not any(_same_lift(l[0], n) for n in names)]
+    replaced = len(existing) - len(kept)
+    merged = kept + work
+    res = weightlog_upsert(date=d, session=sess, lifts=merged, page_id=(target or {}).get("id", ""))
+    if res.get("status") != "saved":
+        res["import_error"] = "lift table write did not complete"
+        return res
+    pid = res.get("page_id")
+
+    # ---- stamp the activity id (cron dedup) + burn/HR, once per activity
+    tgt = target or next((r for r in _safe_rows(d) if r["id"] == pid), None)
+    have = _gids((tgt or {}).get("gid", ""))
+    if aid not in have:
+        pp = (tgt or {}).get("props", {})
+        def _num(k):
+            return (pp.get(k) or {}).get("number") or 0
+        cals = summ.get("calories") or 0
+        props = {"garmin_activity_id": {"rich_text": [{"text": {"content": ",".join(have + [aid])[:200]}}]},
+                 "kcal_burn_app": {"number": round(_num("kcal_burn_app") + cals)},
+                 "kcal_burn_adjusted": {"number": round(_num("kcal_burn_adjusted") + cals * OTHER_BURN_FACTOR)}}
+        if summ.get("duration"):
+            props["duration"] = {"rich_text": [{"text": {"content": _fmt_dur(summ["duration"])}}]}
+        if summ.get("averageHR"):
+            props["avg_hr"] = {"number": round(summ["averageHR"])}
+        if summ.get("maxHR"):
+            props["max_hr"] = {"number": round(summ["maxHR"])}
+        try:
+            _notion("PATCH", f"/pages/{pid}", {"properties": props}, "2022-06-28")
+        except Exception:
+            try:  # older schema: at least the id, so the cron never re-creates this workout
+                _notion("PATCH", f"/pages/{pid}", {"properties": {"garmin_activity_id": props["garmin_activity_id"]}}, "2022-06-28")
+                notes["degraded"] = "only garmin_activity_id written"
+            except Exception as e:
+                notes["activity_stamp_failed"] = str(e)[:80]
+
+    out = {"status": "imported", "date": d, "session": sess, "page_id": pid,
+           "working_sets": sum(w[2] for w in work), "total_reps": sum((w[3] or 0) * w[2] for w in work),
+           "lifts_in_session": len(merged), "replaced_rows": replaced,
+           "sets": [{"set_no": s["set_no"], "exercise": s["exercise"], "kg": s["weight_kg"], "reps": s["reps"],
+                     "rir": (None if r == "warmup" else r), **({"warmup": True} if r == "warmup" else {})}
+                    for s, r in zip(sets, rirs) if not s.get("unmapped")]}
+    if warm:
+        out["warmup_sets_skipped"] = warm
+    if unmapped:
+        out["unmapped_not_written"] = [{"set_no": s["set_no"], "garmin": s["exercise_name"] or s["exercise_category"],
+                                        "shown_as": s["exercise"]} for s in unmapped]
+        out["unmapped_note"] = ("These sets were NOT written. Ask Bank which plan lift each is, re-run with "
+                                "rename={...}, and add the pair to Config GARMIN_MAP so it maps by itself next time.")
+    if any(w[1] == 0 for w in work):
+        out["bodyweight_sets"] = "sets with no weight on the watch were written as 0 kg (bodyweight)"
+    for k in ("server_today", "date_check", "lift_db_rows", "lift_db", "foodlog_label"):
+        if k in res:
+            out[k] = res[k]
+    out.update(notes)
+    return out
+
+
+def _safe_rows(d):
+    try:
+        return _weight_rows(d)
+    except Exception:
+        return []
 
 
 @mcp.tool()

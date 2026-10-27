@@ -2,7 +2,7 @@
 
 > **If you are Claude (or another AI assistant): you are the installer.** The human has asked you to set this system up for them. Read this whole file, then guide them phase by phase. Run every step you can yourself (Notion database creation, verification calls); give the human short copy-paste blocks for the steps only they can do (cloud console, passwords). Never ask the human to type any password into the chat — passwords go into Cloud Shell or their own terminal only.
 
-**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (23 lean tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into the food log AND auto-logs every Garmin workout into the training log. Total time: 45–60 min. Cost: ~$0/month.
+**What gets built:** the user's own private MCP server on Google Cloud Run (free tier) that connects Claude to their Garmin data (24 lean tools), plus Notion databases for food/training/body logs, plus a nightly job that writes their real daily calorie burn into the food log AND auto-logs every Garmin workout into the training log. Total time: 45–60 min. Cost: ~$0/month.
 
 ---
 
@@ -188,7 +188,7 @@ Existing users do NOT rebuild anything — just ADD these, then redeploy:
 **Lifts** (optional — fast strength history) — create the database above + add `NOTION_LIFTS_DS` to `env.yaml`, then run `lift_backfill` once to import existing weight sessions. Leave unset to keep the page-table-only behavior.
 
 **Today widget** (optional — phone/watch) — set `WIDGET_KEY` to a long random string (e.g. `openssl rand -hex 16`). The server then serves `GET https://<your-service>/<WIDGET_KEY>/today` → `{date, kcal, p, c, f, kcal_target, p_target, remaining, logged}` (read-only, no-store). Point an iOS Scriptable widget (see `widget/scriptable-today.js`) or any URL widget at it. Unset = endpoint doesn't exist.
-Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 23 tools).
+Then rebuild env.yaml + redeploy, and **disconnect+reconnect the connector** (tool list changed: now 24 tools).
 
 Everything is backward-safe: recovery/exercise features degrade gracefully if a property/DB is missing, and TrainingLog dedup falls back to name+distance without `garmin_activity_id`.
 
