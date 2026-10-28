@@ -1096,5 +1096,13 @@ main.weightlog_upsert = _orig_wl
 (main.client, main._notion, main._parse_lift_table, main._replace_table, main._lift_db_replace,
  main._foodlog_label, main.get_config, main._today_local, main._notion_query_all) = _sv
 
+ok("assign: ranges", main._parse_ex_assign("set1-2=A, set3=B", 3) == ["A", "A", "B"])
+ok("assign: all + list", main._parse_ex_assign("all=X", 2) == ["X", "X"] and main._parse_ex_assign(["A", "", "B"], 3) == ["A", None, "B"])
+try:
+    main._parse_ex_assign("set9=A", 3); _e = False
+except ValueError:
+    _e = True
+ok("assign: out-of-range refused", _e)
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

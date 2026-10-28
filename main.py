@@ -2327,8 +2327,9 @@ def get_activity_sets(activity_id: str) -> dict:
     um = sorted({s["exercise"] for s in sets if s.get("unmapped")})
     if um:
         out["unmapped"] = um
-        out["unmapped_note"] = ("Not in the plan mapping — ask Bank which Config EXERCISES lift each one is, "
-                                "then pass rename={...} to lift_import_garmin and add it to Config GARMIN_MAP.")
+        out["unmapped_note"] = ("The watch only GUESSES the exercise (it cannot select one) — never trust it. "
+                                "Ask Bank which plan lift each set range was, then lift_import_garmin(..., "
+                                "exercises='set1-4=<plan lift>, set5-7=<plan lift>').")
     if not sets:
         out["note"] = "No ACTIVE sets — not a Strength activity, or the watch recorded no sets."
     return out
@@ -2384,6 +2385,44 @@ def _parse_rir(rir, n):
     return out
 
 
+def _parse_ex_assign(spec, n):
+    """Which lift each ACTIVE set really was — the watch can't pick an exercise, it only GUESSES a
+    category (real data: one Incline Barbell session came back as BENCH_PRESS / UNKNOWN /
+    TRICEPS_EXTENSION). Accepts 'set1-4=Incline Barbell Press, set5-8=Machine Chest Press' / 'all=X'
+    or a per-set list. Unspecified sets -> None (fall back to the mapping). Raises ValueError."""
+    if spec in (None, "", []):
+        return [None] * n
+    if isinstance(spec, str) and spec.strip().startswith("["):
+        import json as _j
+        spec = _j.loads(spec)
+    if isinstance(spec, (list, tuple)):
+        if len(spec) != n:
+            raise ValueError(f"exercises list has {len(spec)} names but the activity has {n} active sets")
+        return [(str(x).strip() or None) if x not in (None, "") else None for x in spec]
+    out = [None] * n
+    import re as _re
+    for seg in _re.split(r"[,;\n]+", str(spec)):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if "=" not in seg:
+            raise ValueError(f"cannot read exercises segment '{seg}' (use set1-4=Incline Barbell Press)")
+        k, v = seg.split("=", 1)
+        k = k.strip().lower().replace("set", "").replace("เซ็ต", "").strip()
+        if k in ("all", "*"):
+            idx = range(1, n + 1)
+        elif "-" in k:
+            a, b = (int(x) for x in k.split("-", 1))
+            idx = range(a, b + 1)
+        else:
+            idx = [int(k)]
+        for i in idx:
+            if not 1 <= i <= n:
+                raise ValueError(f"set {i} is out of range (activity has {n} active sets)")
+            out[i - 1] = v.strip() or None
+    return out
+
+
 def _same_lift(existing_name, imported):
     """An existing table row is the SAME lift as an imported one -> it gets replaced, so a re-import
     or a chat log of the same exercise can never double up ('Incline Barbell Press (set1)' too)."""
@@ -2410,13 +2449,15 @@ def _gids(s):
 
 @mcp.tool()
 def lift_import_garmin(activity_id: str, session: str, rir: list | str | None = None,
-                       rename: dict | str | None = None) -> dict:
+                       rename: dict | str | None = None, exercises: list | str | None = None) -> dict:
     """Import a Garmin Strength activity's per-set weight x reps into TrainingLog (+ Lifts DB) —
     no typing in chat. `session` = today's Config PLAN slot (Push / Pull / Legs A / Legs B).
     `rir` = per ACTIVE set, as a list [2,1,0,0] or text 'set1=warmup, set2=1.5, set3-5=0'
     (warm-up sets are NOT written — they never feed e1RM). Set numbers = `set_no` from
-    get_activity(view='sets'). `rename` = {GARMIN_ENUM or shown name: 'Plan Name'} for lifts the
-    mapping didn't know. MERGES into the day's session row: rows of the imported lifts are replaced,
+    get_activity(view='sets'). `exercises` = which plan lift each set REALLY was, e.g.
+    'set1-4=Incline Barbell Press, set5-7=Machine Chest Press' — the watch cannot select an exercise,
+    it only guesses one (often wrong), so this overrides the guess and is the normal path.
+    `rename` = {GARMIN_ENUM or shown name: 'Plan Name'} for a whole Garmin name at once. MERGES into the day's session row: rows of the imported lifts are replaced,
     every other lift already logged is kept — so re-importing the same activity never duplicates."""
     if not TRAINING_DS:
         return {"error": "NOTION_TRAININGLOG_DS not set"}
@@ -2450,6 +2491,15 @@ def lift_import_garmin(activity_id: str, session: str, rir: list | str | None = 
         rirs = _parse_rir(rir, len(sets))
     except Exception as e:
         return {"error": f"rir: {e}", "active_sets": len(sets)}
+    try:
+        assign = _parse_ex_assign(exercises, len(sets))
+    except Exception as e:
+        return {"error": f"exercises: {e}", "active_sets": len(sets)}
+    for s_, a_ in zip(sets, assign):
+        if a_:
+            s_["watch_guess"] = s_["exercise_name"] or s_["exercise_category"]
+            s_["exercise"] = a_
+            s_.pop("unmapped", None)
 
     unmapped = [s for s in sets if s.get("unmapped")]
     work, warm = [], []
@@ -2554,8 +2604,8 @@ def lift_import_garmin(activity_id: str, session: str, rir: list | str | None = 
     if unmapped:
         out["unmapped_not_written"] = [{"set_no": s["set_no"], "garmin": s["exercise_name"] or s["exercise_category"],
                                         "shown_as": s["exercise"]} for s in unmapped]
-        out["unmapped_note"] = ("These sets were NOT written. Ask Bank which plan lift each is, re-run with "
-                                "rename={...}, and add the pair to Config GARMIN_MAP so it maps by itself next time.")
+        out["unmapped_note"] = ("These sets were NOT written. Ask Bank which plan lift they were and re-run with "
+                                "exercises='setX-Y=<plan lift>' (re-running is safe — nothing duplicates).")
     if any(w[1] == 0 for w in work):
         out["bodyweight_sets"] = "sets with no weight on the watch were written as 0 kg (bodyweight)"
     for k in ("server_today", "date_check", "lift_db_rows", "lift_db", "foodlog_label"):
