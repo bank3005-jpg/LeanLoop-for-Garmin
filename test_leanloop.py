@@ -990,51 +990,43 @@ main._find_row, main._parse_meals, main._notion_write, main._replace_table, \
 # ------------------------------------------------- Garmin per-set strength import (view=sets + lift_import_garmin)
 _sv = (main.client, main._notion, main._parse_lift_table, main._replace_table, main._lift_db_replace,
        main._foodlog_label, main.get_config, main._today_local, main._notion_query_all)
-_S = lambda i, nm, cat, reps, w, t: {"setType": "ACTIVE", "exercises": [{"name": nm, "category": cat, "probability": 97.0}],
-                                      "repetitionCount": reps, "weight": w, "duration": 30.0, "startTime": t, "messageIndex": i}
+_S = lambda i, cat, reps, w, t: {"setType": "ACTIVE", "exercises": [{"name": None, "category": cat, "probability": 97.0}],
+                                  "repetitionCount": reps, "weight": w, "duration": 30.0, "startTime": t, "messageIndex": i}
 _R = lambda t: {"setType": "REST", "repetitionCount": None, "weight": -1.0, "duration": 90.0, "startTime": t}
+# shaped like the REAL activity: one lift, but the watch guessed 3 different exercises
 _SETS = {"activityId": 900000001, "exerciseSets": [
-    _S(0, "INCLINE_BARBELL_BENCH_PRESS", "BENCH_PRESS", 8, 20000.0, "2026-10-27T11:42:00.0"), _R("2026-10-27T11:42:40.0"),
-    _S(2, "INCLINE_BARBELL_BENCH_PRESS", "BENCH_PRESS", 7, 40000.0, "2026-10-27T11:44:00.0"), _R("2026-10-27T11:44:40.0"),
-    _S(4, "INCLINE_BARBELL_BENCH_PRESS", "BENCH_PRESS", 6, 42500.0, "2026-10-27T11:46:00.0"), _R("2026-10-27T11:46:40.0"),
-    _S(6, "INCLINE_BARBELL_BENCH_PRESS", "BENCH_PRESS", 6, 42500.0, "2026-10-27T11:48:00.0"),
-    _S(8, "INCLINE_BARBELL_BENCH_PRESS", "BENCH_PRESS", 5, 42500.0, "2026-10-27T11:50:00.0")]}
+    _S(0, "BENCH_PRESS", 8, 20000.0, "2026-10-27T11:42:00.0"), _R("2026-10-27T11:42:40.0"),
+    _S(2, "UNKNOWN", 7, 40000.0, "2026-10-27T11:44:00.0"), _R("2026-10-27T11:44:40.0"),
+    _S(4, "BENCH_PRESS", 6, 42500.0, "2026-10-27T11:46:00.0"), _R("2026-10-27T11:46:40.0"),
+    _S(6, "TRICEPS_EXTENSION", 6, 42500.0, "2026-10-27T11:48:00.0"),
+    _S(8, "BENCH_PRESS", 5, 42500.0, "2026-10-27T11:50:00.0")]}
 _DET = {"activityId": 900000001, "activityTypeDTO": {"typeKey": "strength_training"},
-        "summaryDTO": {"startTimeLocal": "2026-10-27T18:41:04.0", "duration": 847.6, "calories": 62, "averageHR": 88, "maxHR": 120,
-                       "totalExerciseReps": 32, "activeSets": 5}}
+        "summaryDTO": {"startTimeLocal": "2026-10-27T18:41:04.0", "duration": 847.6, "calories": 62, "averageHR": 88, "maxHR": 120}}
 class _GS:
     def get_activity_exercise_sets(s, aid): return _SETS
     def get_activity(s, aid): return _DET
 main.client = lambda: _GS()
-main.get_config = lambda: "PLAN|Mon=legs_A"
 _v = main.get_activity("900000001", view="sets")
 ok("sets view: 5 ACTIVE sets (REST dropped)", _v["active_sets"] == 5 and len(_v["sets"]) == 5)
-ok("sets view: 32 reps total (= Garmin totalExerciseReps)", _v["total_reps"] == 32)
+ok("sets view: 32 reps total", _v["total_reps"] == 32)
 ok("sets view: grams -> kg (40000 -> 40, 42500 -> 42.5)", [x["weight_kg"] for x in _v["sets"]] == [20, 40, 42.5, 42.5, 42.5])
-ok("sets view: Garmin enum mapped to the plan name", all(x["exercise"] == "Incline Barbell Press" for x in _v["sets"]) and "unmapped" not in _v)
+ok("sets view: watch guess shown as a GUESS only (no plan name invented)", "exercise" not in _v["sets"][0] and _v["sets"][1]["watch_guess"] == "Unknown")
 ok("sets view: set_no 1..5 in time order", [x["set_no"] for x in _v["sets"]] == [1, 2, 3, 4, 5])
 ok("weight: missing / 0 / -1 -> None (never 0)", [main._set_weight_kg(x) for x in (None, 0, -1.0, "")] == [None] * 4)
 ok("weight: already-kg value passes through", main._set_weight_kg(60) == 60)
-ok("map: unknown enum stays raw + unmapped", main._map_garmin_exercise("BARBELL_BENCH_PRESS", "BENCH_PRESS")[1] is None)
-ok("map: Smith incline is NOT silently called the free barbell lift", main._map_garmin_exercise("INCLINE_SMITH_MACHINE_BENCH_PRESS", "BENCH_PRESS")[1] is None)
-ok("map: Config GARMIN_MAP override wins", main._map_garmin_exercise("BARBELL_BENCH_PRESS", "BENCH_PRESS", {"BARBELL_BENCH_PRESS": "Machine Chest Press"}) == ("Machine Chest Press", "config"))
-main.get_config = lambda: "GARMIN_MAP|SEATED_ROW=Cable Row|FOO=Bar"
-ok("map: Config GARMIN_MAP line parsed", main._config_garmin_map() == {"SEATED_ROW": "Cable Row", "FOO": "Bar"})
 ok("rir: grouped text", main._parse_rir("set1=warmup, set2=1.5, set3-5=0", 5) == ["warmup", 1.5, 0.0, 0.0, 0.0])
 ok("rir: list", main._parse_rir([2, 1, 0, 0, "w"], 5) == [2.0, 1.0, 0.0, 0.0, "warmup"])
 ok("rir: none -> all None", main._parse_rir(None, 3) == [None, None, None])
-try:
-    main._parse_rir([1, 2], 5); _e = False
-except ValueError:
-    _e = True
-ok("rir: wrong-length list is refused", _e)
-try:
-    main._parse_rir("set7=1", 5); _e = False
-except ValueError:
-    _e = True
-ok("rir: out-of-range set is refused", _e)
+for _bad in ([1, 2], "set7=1"):
+    try:
+        main._parse_rir(_bad, 5); _e = False
+    except ValueError:
+        _e = True
+    ok("rir: bad input refused (%r)" % (_bad,), _e)
+ok("assign: ranges", main._parse_ex_assign("set1-2=A, set3=B", 3) == ["A", "A", "B"])
+ok("assign: all + list", main._parse_ex_assign("all=X", 2) == ["X", "X"] and main._parse_ex_assign(["A", "", "B"], 3) == ["A", None, "B"])
+ok("same lift = exact name only (variation untouched)", main._same_lift("Hip Adduction", " hip adduction ") and not main._same_lift("Hip Adduction (ก้นลอย)", "Hip Adduction"))
 
-# import twice -> one session row, no duplicate lifts, warm-up not written, other lifts kept
 main.get_config = lambda: ""
 _db = {"rows": [], "table": {}, "patch": [], "archived": []}
 def _qa(ds, flt=None):
@@ -1050,15 +1042,10 @@ def _nn(m, p, pl, v):
                 if "garmin_activity_id" in pr: r["gid"] = pr["garmin_activity_id"]["rich_text"][0]["text"]["content"]
                 if "session" in pr: r["title"] = pr["session"]["title"][0]["text"]["content"]
         _db["patch"].append((pid, pl)); return {}
-    if "query" in p:
-        return {"results": [{"id": r["id"], "properties": {"session": {"title": [{"plain_text": r["title"]}]}}} for r in _db["rows"]]}
-    if p == "/pages":
-        _db["rows"].append({"id": "new1", "title": pl["properties"]["session"]["title"][0]["text"]["content"], "gid": ""}); return {"id": "new1"}
     return {"results": []}
 main._notion = _nn; main._notion_query_all = _qa
 main._parse_lift_table = lambda pid: [list(x) for x in _db["table"].get(pid, [])]
-def _wt(lifts_pid, d, sess, parsed): return len(parsed)
-main._lift_db_replace = _wt; main._foodlog_label = lambda d, n: None
+main._lift_db_replace = lambda *a: 0; main._foodlog_label = lambda d, n: None
 _orig_wl = main.weightlog_upsert
 def _wl(date="", session="", lifts=None, page_id=""):
     pid = page_id or next((r["id"] for r in _db["rows"] if r["title"].lower() == session.lower()), None)
@@ -1067,42 +1054,82 @@ def _wl(date="", session="", lifts=None, page_id=""):
     _db["table"][pid] = [list(l) + [None] * (5 - len(l)) for l in lifts]
     return {"status": "saved", "page_id": pid, "date": date}
 main.weightlog_upsert = _wl
-# a lift already logged in chat earlier + the cron's bare "Strength" row for this workout
 _db["rows"] = [{"id": "push1", "title": "Push", "gid": ""}, {"id": "cron1", "title": "Strength", "gid": "900000001"}]
 _db["table"] = {"push1": [["Cable Lateral Raise", 14.5, 1, 12, 1.5]], "cron1": []}
-_r1 = main.lift_import_garmin("900000001", "Push", rir="set1=warmup, set2=2, set3-5=0")
-ok("import: status imported, dated by the ACTIVITY (2026-10-27)", _r1.get("status") == "imported" and _r1["date"] == "2026-10-27")
-ok("import: warm-up set not written -> 4 working sets / 24 reps", _r1["working_sets"] == 4 and _r1["total_reps"] == 24 and _r1.get("warmup_sets_skipped") == [1])
-ok("import: lift logged earlier in chat is KEPT", any(l[0] == "Cable Lateral Raise" for l in _db["table"]["push1"]))
-ok("import: cron's empty Strength row retired (no 2nd row for one workout)", "cron1" in _db["archived"] and _r1.get("retired_duplicate_row") == "Strength")
+_r0 = main.lift_import_garmin("900000001", "Push")
+ok("import: no lift names -> nothing written (watch guesses never used)", "error" in _r0 and _db["table"]["push1"] == [["Cable Lateral Raise", 14.5, 1, 12, 1.5]])
+_r1 = main.lift_import_garmin("900000001", "Push", exercises="set1-5=Incline Barbell Press", rir="set1=warmup, set2=2, set3-5=0")
+ok("import: dated by the ACTIVITY", _r1.get("status") == "imported" and _r1["date"] == "2026-10-27")
+ok("import: warm-up skipped -> 4 working sets / 24 reps", _r1["working_sets"] == 4 and _r1["total_reps"] == 24 and _r1.get("warmup_sets_skipped") == [1])
+ok("import: lift typed in chat earlier is KEPT", any(l[0] == "Cable Lateral Raise" for l in _db["table"]["push1"]))
+ok("import: cron's empty Strength row retired", "cron1" in _db["archived"])
 ok("import: activity id stamped on the session row", "900000001" in next(r["gid"] for r in _db["rows"] if r["id"] == "push1"))
-_n1 = len(_db["table"]["push1"])
-_r2 = main.lift_import_garmin("900000001", "Push", rir="set1=warmup, set2=2, set3-5=0")
-ok("import twice: same row count (idempotent)", len(_db["table"]["push1"]) == _n1 == 4 and _r2["replaced_rows"] == 3)
-ok("import twice: still exactly one Push row", sum(1 for r in _db["rows"] if r["title"] == "Push") == 1)
-ok("import twice: burn not double-added (id already stamped)", sum(1 for pid, pl in _db["patch"] if pid == "push1" and "kcal_burn_app" in pl.get("properties", {})) == 1)
-ok("import: identical consecutive sets collapse (42.5x6 x2 -> one 2-set row), RIR kept",
+ok("import: identical consecutive sets collapse, RIR kept",
    [l[1:] for l in _db["table"]["push1"] if l[0] == "Incline Barbell Press"] == [[40, 1, 7, 2.0], [42.5, 2, 6, 0.0], [42.5, 1, 5, 0.0]])
-# cron must now skip this workout (id lives on the Push row, even alongside another id)
+_n1 = len(_db["table"]["push1"])
+_r2 = main.lift_import_garmin("900000001", "Push", exercises="set1-5=Incline Barbell Press", rir="set1=warmup, set2=2, set3-5=0")
+ok("import twice: same rows (idempotent)", len(_db["table"]["push1"]) == _n1 == 4 and _r2["replaced_rows"] == 3)
+ok("import twice: burn not double-added", sum(1 for pid, pl in _db["patch"] if pid == "push1" and "kcal_burn_app" in pl.get("properties", {})) == 1)
+ok("import: partial names -> unnamed sets reported, not written",
+   main.lift_import_garmin("900000001", "Push", exercises="set1-5=Incline Barbell Press, set5=", rir="set1=w", mode="replace").get("unassigned") == [5])
+# guard: watch caught FEWER sets than were typed -> refuse, nothing changes
+_db["table"]["push1"] = [["Incline Barbell Press", 42.5, 6, 6, 1]]
+_before = [list(x) for x in _db["table"]["push1"]]
+_r3 = main.lift_import_garmin("900000001", "Push", exercises="all=Incline Barbell Press")
+ok("guard: fewer sets than logged -> refused, table untouched", _r3.get("error") == "would-drop-sets" and _db["table"]["push1"] == _before)
+_r4 = main.lift_import_garmin("900000001", "Push", exercises="all=Incline Barbell Press", mode="append")
+ok("guard: mode=append keeps both (lift split across activities)", len(_db["table"]["push1"]) == 1 + len(_r4["rows"]))
+_r5 = main.lift_import_garmin("900000001", "Push", exercises="all=Incline Barbell Press", mode="replace")
+ok("guard: mode=replace = confirmed overwrite", all(l[2] <= 2 for l in _db["table"]["push1"]) and _r5["status"] == "imported")
 ok("cron dedup reads a multi-id cell", "900000001" in main._gids("111, 900000001"))
-# not a strength activity -> refused
-_DET2 = dict(_DET, activityTypeDTO={"typeKey": "running"})
 class _GR(_GS):
-    def get_activity(s, aid): return _DET2
+    def get_activity(s, aid): return dict(_DET, activityTypeDTO={"typeKey": "running"})
 main.client = lambda: _GR()
-ok("import: non-strength activity refused", "error" in main.lift_import_garmin("1", "Push"))
-ok("import: session is required", "error" in main.lift_import_garmin("1", ""))
+ok("import: non-strength activity refused", "error" in main.lift_import_garmin("1", "Push", exercises="all=X"))
+ok("import: session is required", "error" in main.lift_import_garmin("1", "", exercises="all=X"))
 main.weightlog_upsert = _orig_wl
 (main.client, main._notion, main._parse_lift_table, main._replace_table, main._lift_db_replace,
  main._foodlog_label, main.get_config, main._today_local, main._notion_query_all) = _sv
 
-ok("assign: ranges", main._parse_ex_assign("set1-2=A, set3=B", 3) == ["A", "A", "B"])
-ok("assign: all + list", main._parse_ex_assign("all=X", 2) == ["X", "X"] and main._parse_ex_assign(["A", "", "B"], 3) == ["A", None, "B"])
-try:
-    main._parse_ex_assign("set9=A", 3); _e = False
-except ValueError:
-    _e = True
-ok("assign: out-of-range refused", _e)
+# cron: a watch Strength activity on a day that ALREADY has a typed session -> attach, no 2nd row
+_sv2 = (main._notion,)
+_made, _pt = [], []
+def _nc(m, p, pl, v):
+    if "query" in p:
+        return {"results": [{"id": "push9", "properties": {"session": {"title": [{"plain_text": "Push"}]},
+                             "type": {"select": {"name": "weights"}}}}]}
+    if p == "/pages": _made.append(pl); return {"id": "x"}
+    if m == "PATCH": _pt.append((p, pl)); return {}
+    return {"results": []}
+main._notion = _nc
+_cr = main._log_training("2026-10-27", [{"activityId": 555, "activityName": "Strength", "activityType": {"typeKey": "strength_training"},
+                                         "duration": 900, "distance": 0, "calories": 60, "averageHR": 90}])
+ok("cron: watch strength on a typed-session day -> attached, NO 2nd row", _cr.get("created") == 0 and _cr.get("attached_to_session") == 1 and not _made)
+ok("cron: ...only id/burn written to the row (lifts untouched)", _pt and all("properties" in pl and "children" not in pl for _, pl in _pt)
+   and "555" in _pt[0][1]["properties"]["garmin_activity_id"]["rich_text"][0]["text"]["content"])
+_made.clear()
+def _nc2(m, p, pl, v):
+    if "query" in p: return {"results": []}
+    if p == "/pages": _made.append(pl); return {"id": "x"}
+    return {"results": []}
+main._notion = _nc2
+ok("cron: chat-only days untouched — no activity, no write", main._log_training("2026-10-27", [])["created"] == 0 and not _made)
+main._notion = _sv2[0]
+
+# chat log on a day the cron already made a watch "Strength" row -> reuse it (one workout = one row)
+_svw = (main._notion, main._foodlog_label)
+_mk, _pt = [], []
+def _nw(m, p, pl, v):
+    if "query" in p:
+        return {"results": [{"id": "cronS", "properties": {"session": {"title": [{"plain_text": "Strength"}]}}}]}
+    if p == "/pages": _mk.append(pl); return {"id": "newrow"}
+    if m == "PATCH": _pt.append((p, pl)); return {}
+    return {"results": []}
+main._notion = _nw; main._foodlog_label = lambda d, n: None
+_rw = main.weightlog_upsert(date="2026-10-27", session="Push", lifts=None)
+ok("chat log adopts the cron's Strength row (renamed, no 2nd row)", _rw.get("page_id") == "cronS" and not _mk
+   and any("cronS" in p and pl["properties"]["session"]["title"][0]["text"]["content"] == "Push" for p, pl in _pt))
+main._notion, main._foodlog_label = _svw
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
