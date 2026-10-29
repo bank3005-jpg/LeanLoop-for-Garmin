@@ -873,7 +873,7 @@ def _compose_label(cur, weights, cardio):
     both writers (log-time + nightly closer) idempotent and unable to fight each other."""
     cur = cur or ""
     lead = [n for n in weights if n and n not in cur]
-    tail = [n for n in cardio if n and n not in cur]
+    tail = [n for n in cardio if n and n not in cur and n not in lead]  # never "Strength + Strength"
     if not lead and not tail:
         return None
     return _LABEL_SEP.join(lead + ([cur] if cur else []) + tail)

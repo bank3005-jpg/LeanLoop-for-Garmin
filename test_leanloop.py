@@ -1131,5 +1131,7 @@ ok("chat log adopts the cron's Strength row (renamed, no 2nd row)", _rw.get("pag
    and any("cronS" in p and pl["properties"]["session"]["title"][0]["text"]["content"] == "Push" for p, pl in _pt))
 main._notion, main._foodlog_label = _svw
 
+ok("label: same name as weights + activity is NOT doubled", main._compose_label("", ["Strength"], ["Strength"]) == "Strength")
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
