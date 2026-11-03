@@ -1150,7 +1150,9 @@ main._notion_query_all = lambda ds, f=None: [
     _L("2026-10-19", "Single-Leg Calf Raise (riser)", 10, 2, 15, 0.5, 15), _L("2026-10-26", "Single-Leg Calf Raise (riser)", 12.5, 2, 12, 0, 17.5),
     _L("2026-10-26", "Smith Machine Back Squat", 50, 4, 8, 2, 63.3), _L("2026-09-03", "Assisted Pull-up Machine (กว้าง, set1)", 75, 1, 6, None, 90),
     _L("2026-09-03", "DB Incline Curl (set1)", 7.5, 1, 12, None, 10.5)]
+main.TRAINING_DS = "tl"
 _lp = main.lift_plan()
+ok("lift_plan: recent_sessions come from TrainingLog (chat-logged sessions count)", isinstance(_lp.get("recent_sessions"), list) and "recent_note" in _lp)
 ok("lift_plan: Monday -> Legs A from PLAN", _lp.get("session") == "Legs A")
 _by = {x["lift"]: x for x in _lp["lifts"]}
 ok("lift_plan: calf raise last = 12.5 kg (the real D233 miss)", _by["Single-Leg Calf Raise (riser)"]["last"]["sets"][0]["kg"] == 12.5
