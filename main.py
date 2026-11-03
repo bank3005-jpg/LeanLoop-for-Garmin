@@ -1675,6 +1675,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
     try:
         row = _find_row(d)
         if row:
+            _edited = []
             if parsed_meals is not None and not allow_remove:
                 # A meals write REPLACES the whole table. Two chats open on the same day means one of
                 # them can hold a stale copy; writing it blind silently deletes whatever the other
@@ -1687,6 +1688,9 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                                     "proven safe (UNKNOWN is not empty). Retry; if it keeps failing, "
                                     "read the day with foodlog_read and resend the merged list."}
                 _gone = _dropped_meals(_cur, parsed_meals)
+                _was = {_meal_key(m): list(m[2:6]) for m in _cur}
+                _edited = [m for m in parsed_meals if _meal_key(m) in _was and
+                           any(abs(float(a or 0) - float(b or 0)) > 0.5 for a, b in zip(_was[_meal_key(m)], m[2:6]))]
                 if _gone:
                     return {"date": d, "error": "would-drop-meals",
                             "dropped": _gone, "current_meals": _cur,
@@ -1709,6 +1713,10 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                 res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
                 res["render_required"] = _render_directive(parsed_meals)
                 _date_stamp(res, d)
+                if _edited or allow_remove:
+                    res["if_correction"] = ("You changed/removed an already-saved meal. If that is because "
+                                            "Bank caught YOUR mistake (not new info from him), call "
+                                            "log_coach_miss now — silently.")
             return res
         title = _day_title(d)
         full_props = {"day": {"title": [{"text": {"content": title}}]},
@@ -2532,6 +2540,192 @@ def _safe_rows(d):
         return _weight_rows(d)
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------- one-call lift prescription data
+# Real miss (D233): the coach told Bank "no history for Single-Leg Calf Raise" and prescribed
+# bodyweight — he had 12.5 kg logged the week before. The playbook already said "call lift_history
+# per exercise before prescribing"; a rule that needs N separate calls gets skipped. This returns
+# today's PLAN slot + every planned lift + its last session in ONE call, so there is nothing to skip.
+
+_SLOT_NAMES = {"legs_a": "Legs A", "legs_b": "Legs B", "push": "Push", "pull": "Pull"}
+_WEEKDAY_KEYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_TOK_SYN = {"db": "dumbbell", "delt": "deltoid", "delts": "deltoid", "oh": "overhead",
+            "ext": "extension", "rdl": "romanian deadlift"}
+_TOK_DROP = {"machine", "the", "with", "and", "a"}
+
+
+def _lift_tokens(name):
+    """Comparable token set for a lift name: parentheticals / setN / punctuation dropped, a few
+    gym synonyms folded ('DB'=dumbbell, 'OH'=overhead, Pull-up=Chin-up), 'Machine' ignored."""
+    import re as _re
+    s = (name or "").lower()
+    s = _re.sub(r"\([^)]*\)", " ", s)
+    s = _re.sub(r"\bset\s*\d+(\s*-\s*\d+)?\b", " ", s)
+    s = s.replace("pull-up", "pullup").replace("pull up", "pullup").replace("chin-up", "pullup") \
+         .replace("chin up", "pullup").replace("t-bar", "tbar").replace("single-leg", "single leg") \
+         .replace("single-arm", "single arm").replace("chest-supported", "chest supported")
+    out = set()
+    for t in _re.split(r"[^a-z0-9]+", s):
+        if not t or t in _TOK_DROP:
+            continue
+        out.update(_TOK_SYN.get(t, t).split())
+    return out
+
+
+def _plan_alternatives(name):
+    """'Back/Front Squat' -> ['Back Squat', 'Front Squat']; 'Chest-Supported T-Bar/Cable Row' ->
+    ['Chest-Supported T-Bar Row', 'Cable Row']. A part missing the shared last word gets it."""
+    parts = [p.strip() for p in name.split("/") if p.strip()]
+    if len(parts) < 2:
+        return [name.strip()]
+    tail = parts[-1].split()[-1]
+    moves = ("squat", "press", "row", "curl", "raise", "pulldown", "chin-up", "pull-up", "lunge",
+             "deadlift", "thrust", "extension", "ext", "fly", "flye")
+    return [p if (i == len(parts) - 1 or p.split()[-1].lower() in moves) else p + " " + tail
+            for i, p in enumerate(parts)]
+
+
+def _parse_plan_config(cfg):
+    """Config text -> ({Mon: 'legs_A', ...}, {slot_key_lower: [(name, target)]})."""
+    import re as _re
+    plan, ex = {}, {}
+    for line in (cfg or "").splitlines():
+        t = line.replace("\\|", "|").strip()
+        if t.upper().startswith("PLAN|"):
+            for part in t.split("|")[1:]:
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    if k.strip() in _WEEKDAY_KEYS:
+                        plan[k.strip()] = v.strip()
+        elif t.upper().startswith("EXERCISES"):
+            for part in t.split("|")[1:]:
+                if "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                key = _re.split(r"[\s(]", k.strip(), 1)[0].lower()
+                if key not in _SLOT_NAMES:
+                    continue
+                items = []
+                for it in v.split("·"):
+                    it = it.strip()
+                    m = _re.search(r"\s(\d+(?:-\d+)?\s*[×x]\s*\S+.*)$", it)
+                    if m:
+                        items.append((it[:m.start()].strip(), m.group(1).strip()))
+                    elif it:
+                        items.append((it, ""))
+                ex[key] = items
+    return plan, ex
+
+
+def _slot_for(plan, weekday):
+    v = (plan.get(weekday) or "").lower()
+    for k in _SLOT_NAMES:
+        if v.startswith(k) or ("+" + k) in v.replace(" ", ""):
+            return k
+    return None
+
+
+@mcp.tool()
+def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
+    """START HERE for any 'what / how much do I lift today' — ONE call returns today's PLAN slot,
+    every planned lift (Config EXERCISES, in order) with its target, and HIS last session of each
+    lift (date + every set: kg × reps, RIR) from the Lifts DB, plus what he already trained this
+    week. Never say a lift has 'no history' unless this returns `last: null` for it (= nothing in
+    `weeks`). `session` = Push / Pull / Legs A / Legs B (default: today's PLAN slot)."""
+    from datetime import date as _date, timedelta as _td
+    d = _date.fromisoformat(day(date))
+    plan, ex = _parse_plan_config(get_config())
+    key = None
+    if session:
+        s = session.strip().lower().replace(" ", "_")
+        key = s if s in _SLOT_NAMES else next((k for k, v in _SLOT_NAMES.items() if v.lower() == session.strip().lower()), None)
+    else:
+        key = _slot_for(plan, _WEEKDAY_KEYS[d.weekday()])
+    if not key:
+        return {"date": d.isoformat(), "weekday": _WEEKDAY_KEYS[d.weekday()],
+                "plan_today": plan.get(_WEEKDAY_KEYS[d.weekday()]),
+                "note": "Today's PLAN slot is not a lift day (or PLAN unreadable). Pass session= to look one up."}
+    lifts = ex.get(key) or []
+    if not lifts:
+        return {"error": f"Config EXERCISES has no list for '{key}' — fetch the Training Plan page instead"}
+    if not LIFTS_DS:
+        return {"error": "NOTION_LIFTS_DS not set — use traininglog_read for history"}
+    since = (d - _td(days=max(1, int(weeks)) * 7)).isoformat()
+    try:
+        rows = _notion_query_all(LIFTS_DS, {"and": [{"property": "date", "date": {"on_or_after": since}},
+                                                    {"property": "date", "date": {"on_or_before": d.isoformat()}}]})
+    except Exception as e:
+        return {"error": f"lift-query-failed: {e}"}  # UNKNOWN != empty -> never imply "no history"
+    hist = []
+    for r in rows:
+        p = r.get("properties", {})
+        def num(k):
+            return (p.get(k) or {}).get("number")
+        nm = "".join(t.get("plain_text", "") for t in ((p.get("lift") or {}).get("title") or []))
+        hist.append({"date": ((p.get("date") or {}).get("date") or {}).get("start"), "lift": nm,
+                     "kg": num("load"), "sets": num("sets"), "reps": num("reps"), "rir": num("rir"),
+                     "e1rm": num("e1rm"), "_tok": _lift_tokens(nm)})
+    monday = (d - _td(days=d.weekday())).isoformat()
+    out = []
+    for name, target in lifts:
+        alts = [_lift_tokens(a) for a in _plan_alternatives(name)]
+        mine = [h for h in hist if h["date"] and any(a and a <= h["_tok"] for a in alts)]
+        past = [h for h in mine if h["date"] < d.isoformat()] or mine
+        item = {"lift": name, "target": target, "last": None}
+        if past:
+            last_d = max(h["date"] for h in past)
+            sets = [{k: h[k] for k in ("lift", "kg", "sets", "reps", "rir")} for h in past if h["date"] == last_d]
+            prev_ds = sorted({h["date"] for h in past if h["date"] < last_d})
+            item["last"] = {"date": last_d, "sets": sets,
+                            "best_e1rm": max((h["e1rm"] or 0) for h in past if h["date"] == last_d) or None}
+            if prev_ds:
+                item["prev_best_e1rm"] = max((h["e1rm"] or 0) for h in past if h["date"] == prev_ds[-1]) or None
+        done = sorted({h["date"] for h in mine if monday <= h["date"] <= d.isoformat()})
+        if done:
+            item["done_this_week"] = done
+        out.append(item)
+    return {"date": d.isoformat(), "weekday": _WEEKDAY_KEYS[d.weekday()], "session": _SLOT_NAMES[key],
+            "lookback_weeks": int(weeks), "lifts": out,
+            "render": "Reply with the table  ท่า | ครั้งก่อน | วันนี้(เป้า)  — EVERY lift with his real kg from "
+                      "`last`. `last: null` = nothing in the lookback (say so; never invent 'no history')."}
+
+
+def _misses_ds():
+    import re as _re
+    for line in (get_config() or "").splitlines():
+        if line.strip().upper().startswith("MISSES"):
+            m = _re.search(r"collection://([0-9a-f-]{32,36})", line)
+            if m:
+                return m.group(1)
+    return None
+
+
+@mcp.tool()
+def log_coach_miss(miss: str, category: str = "other", bank_said: str = "", rule_fix: str = "") -> dict:
+    """Call the MOMENT the user corrects you or flags a coach mistake ('ผิด', 'ไม่ใช่', 'เอ๋อ', 'หลงวัน',
+    'ตารางหาย', 'ทำไม…', a screenshot of your error, swearing at a wrong answer) — right after fixing it.
+    One row per distinct miss; silent (don't announce it). category: food-table | date |
+    lift-prescription | macro-calc | plan-recall | misread | other. miss = what went wrong (1 line),
+    bank_said = his words, rule_fix = the rule that would have prevented it."""
+    ds = _misses_ds()
+    if not ds:
+        return {"error": "no MISSES line with a collection:// id in Config"}
+    cats = {"food-table", "date", "lift-prescription", "macro-calc", "plan-recall", "misread", "other"}
+    d = day("")
+    props = {"miss": {"title": [{"text": {"content": (miss or "?")[:200]}}]},
+             "date": {"date": {"start": d}},
+             "day": {"rich_text": [{"text": {"content": _day_title(d)}}]},
+             "category": {"select": {"name": category if category in cats else "other"}},
+             "bank_said": {"rich_text": [{"text": {"content": (bank_said or "")[:500]}}]},
+             "rule_fix": {"rich_text": [{"text": {"content": (rule_fix or "")[:1000]}}]},
+             "status": {"select": {"name": "open"}}}
+    try:
+        r = _notion("POST", "/pages", {"parent": {"type": "data_source_id", "data_source_id": ds},
+                                       "properties": props}, "2025-09-03")
+    except Exception as e:
+        return {"error": f"miss-log-failed: {str(e)[:120]}"}
+    return {"status": "logged", "id": r.get("id"), "day": _day_title(d)}
 
 
 @mcp.tool()

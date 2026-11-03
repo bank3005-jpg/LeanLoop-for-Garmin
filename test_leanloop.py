@@ -1133,5 +1133,59 @@ main._notion, main._foodlog_label = _svw
 
 ok("label: same name as weights + activity is NOT doubled", main._compose_label("", ["Strength"], ["Strength"]) == "Strength")
 
+# ------------------------------------------------- lift_plan: one call = every planned lift + last session
+_svp = (main.get_config, main._notion_query_all, main.LIFTS_DS, main._today_local, main._notion)
+_CFG = ("PLAN|Mon=legs_A(heavy)+corrective|Tue=push+easy_run|Wed=tempo|Thu=pull+easy_run|Fri=legs_B(heavy)|Sat=long_easy_run|Sun=rest\n"
+        "EXERCISES (x)|legs_A(quad/squat)=Back/Front Squat 4×5-8(หลัก) · Hip Abduction 3×12-15 · Single-Leg Calf Raise (riser) 3×12-15/ข้าง"
+        "|pull=Assisted Chin-up/Lat Pulldown 3-4×6-12 · Incline DB Curl 3×10-12|swap_rule=x\n"
+        "MISSES|CoachMisses data_source=collection://36e35bfd-e464-41ac-b7b7-2be0f1f44ea4 (x)")
+main.get_config = lambda: _CFG
+main.LIFTS_DS = "lf"
+import datetime as _dt
+main._today_local = lambda: _dt.date(2026, 11, 2)  # a Monday -> legs_A
+def _L(d, n, kg, s, r, rir=None, e=None):
+    return {"properties": {"lift": {"title": [{"plain_text": n}]}, "date": {"date": {"start": d}},
+            "load": {"number": kg}, "sets": {"number": s}, "reps": {"number": r}, "rir": {"number": rir}, "e1rm": {"number": e}}}
+main._notion_query_all = lambda ds, f=None: [
+    _L("2026-10-19", "Single-Leg Calf Raise (riser)", 10, 2, 15, 0.5, 15), _L("2026-10-26", "Single-Leg Calf Raise (riser)", 12.5, 2, 12, 0, 17.5),
+    _L("2026-10-26", "Smith Machine Back Squat", 50, 4, 8, 2, 63.3), _L("2026-09-03", "Assisted Pull-up Machine (กว้าง, set1)", 75, 1, 6, None, 90),
+    _L("2026-09-03", "DB Incline Curl (set1)", 7.5, 1, 12, None, 10.5)]
+_lp = main.lift_plan()
+ok("lift_plan: Monday -> Legs A from PLAN", _lp.get("session") == "Legs A")
+_by = {x["lift"]: x for x in _lp["lifts"]}
+ok("lift_plan: calf raise last = 12.5 kg (the real D233 miss)", _by["Single-Leg Calf Raise (riser)"]["last"]["sets"][0]["kg"] == 12.5
+   and _by["Single-Leg Calf Raise (riser)"]["last"]["date"] == "2026-10-26")
+ok("lift_plan: 'Back/Front Squat' finds the squat history", _by["Back/Front Squat"]["last"]["date"] == "2026-10-26")
+ok("lift_plan: lift with no rows -> last None (honest, not invented)", _by["Hip Abduction"]["last"] is None)
+ok("lift_plan: progression context (prev best e1RM)", _by["Single-Leg Calf Raise (riser)"].get("prev_best_e1rm") == 15)
+_lpp = main.lift_plan(session="Pull")
+_bp = {x["lift"]: x for x in _lpp["lifts"]}
+ok("lift_plan: Chin-up plan name matches 'Assisted Pull-up Machine' + DB curl synonym",
+   _bp["Assisted Chin-up/Lat Pulldown"]["last"] is not None and _bp["Incline DB Curl"]["last"] is not None)
+main._today_local = lambda: _dt.date(2026, 11, 4)  # Wednesday = tempo
+ok("lift_plan: non-lift day says so (no fake table)", "note" in main.lift_plan())
+def _qfail(ds, f=None): raise RuntimeError("down")
+main._notion_query_all = _qfail
+ok("lift_plan: read failure -> error, never 'no history'", "error" in main.lift_plan(session="Push" if False else "Legs A"))
+# log_coach_miss
+_mm = []
+main._notion = lambda m, p, pl, v: (_mm.append(pl), {"id": "miss1"})[1]
+_r = main.log_coach_miss("said no history", "lift-prescription", "มีดิ", "call lift_plan")
+ok("log_coach_miss: writes one row to the MISSES data source", _r.get("status") == "logged" and
+   _mm[0]["parent"]["data_source_id"] == "36e35bfd-e464-41ac-b7b7-2be0f1f44ea4" and _mm[0]["properties"]["status"]["select"]["name"] == "open")
+ok("log_coach_miss: unknown category -> other", (main.log_coach_miss("x", "weird"), _mm[-1]["properties"]["category"]["select"]["name"])[1] == "other")
+main.get_config = lambda: "nothing"
+ok("log_coach_miss: no MISSES line -> error (not silent)", "error" in main.log_coach_miss("x"))
+(main.get_config, main._notion_query_all, main.LIFTS_DS, main._today_local, main._notion) = _svp
+
+# foodlog: editing an already-saved meal nudges the coach to log its own miss
+_svf = (main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS)
+main.FOODLOG_DS = "ds"; main._find_row = lambda d: {"id": "pg"}
+main._parse_meals = lambda pid: [["12:00", "rice", 300, 5, 60, 1]]
+main._notion_write = lambda *a, **k: {}; main._replace_table = lambda *a, **k: None
+ok("foodlog: changed saved meal -> if_correction nudge", "if_correction" in main.foodlog_upsert(meals=[["12:00", "rice", 200, 4, 44, 1]]))
+ok("foodlog: plain add -> no nudge", "if_correction" not in main.foodlog_upsert(meals=[["12:00", "rice", 300, 5, 60, 1], ["13:00", "egg", 70, 6, 0, 5]]))
+(main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS) = _svf
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
