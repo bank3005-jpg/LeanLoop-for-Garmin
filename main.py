@@ -2631,7 +2631,7 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
     """START HERE for any 'what / how much do I lift today' — ONE call returns today's PLAN slot,
     every planned lift (Config EXERCISES, in order) with its target, HIS last session of each
     lift (date + every set: kg × reps, RIR) from the Lifts DB, and every session he logged in the
-    last 7 days (`recent_sessions` — the only valid source for "did he skip"; Garmin activities
+    last 4 weeks (`recent_sessions` — the only valid source for "did he skip"; Garmin activities
     don't contain chat-logged lifts). Never say a lift has 'no history' unless this returns `last: null` for it (= nothing in
     `weeks`). `session` = Push / Pull / Legs A / Legs B (default: today's PLAN slot)."""
     from datetime import date as _date, timedelta as _td
@@ -2686,14 +2686,14 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
         if done:
             item["done_this_week"] = done
         out.append(item)
-    # What he ACTUALLY trained the last 7 days, from TrainingLog — chat-logged weight sessions never
+    # What he ACTUALLY trained the last 4 weeks, from TrainingLog — chat-logged weight sessions never
     # appear in Garmin activities, so "the watch shows nothing" is NOT "he skipped" (real miss D234:
     # coach scolded him for skipping Legs A the day after he squatted 80 kg).
     recent = None
     if TRAINING_DS:
         try:
             tl = _notion_query_all(TRAINING_DS, {"and": [
-                {"property": "date", "date": {"on_or_after": (d - _td(days=7)).isoformat()}},
+                {"property": "date", "date": {"on_or_after": (d - _td(days=28)).isoformat()}},
                 {"property": "date", "date": {"on_or_before": d.isoformat()}}]})
             recent = sorted(({"date": ((r.get("properties", {}).get("date") or {}).get("date") or {}).get("start"),
                               "session": "".join(x.get("plain_text", "") for x in
@@ -2705,7 +2705,7 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
     return {"date": d.isoformat(), "weekday": _WEEKDAY_KEYS[d.weekday()], "session": _SLOT_NAMES[key],
             "lookback_weeks": int(weeks), "lifts": out,
             "recent_sessions": recent,
-            "recent_note": "This (TrainingLog, last 7 days) is the ONLY source for 'did he train / skip'. "
+            "recent_note": "This (TrainingLog, last 4 weeks) is the ONLY source for 'did he train / skip'. "
                            "Garmin activities miss every chat-logged weight session.",
             "render": "Reply with the table  ท่า | ครั้งก่อน | วันนี้(เป้า)  — EVERY lift with his real kg from "
                       "`last`. `last: null` = nothing in the lookback (say so; never invent 'no history')."}
