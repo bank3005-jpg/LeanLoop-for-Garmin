@@ -1189,5 +1189,14 @@ ok("foodlog: changed saved meal -> if_correction nudge", "if_correction" in main
 ok("foodlog: plain add -> no nudge", "if_correction" not in main.foodlog_upsert(meals=[["12:00", "rice", 300, 5, 60, 1], ["13:00", "egg", 70, 6, 0, 5]]))
 (main._find_row, main._parse_meals, main._notion_write, main._replace_table, main.FOODLOG_DS) = _svf
 
+_gc_sv = main.get_config
+
+ok("misses id: bare uuid on the MISSES line is found", (setattr(main, "get_config", lambda: "MISSES|CoachMisses ds_id=36e35bfd-e464-41ac-b7b7-2be0f1f44ea4 x"), main._misses_ds())[1] == "36e35bfd-e464-41ac-b7b7-2be0f1f44ea4")
+ok("incline walk on the treadmill is not a run", main._tl_type({"activityType": {"typeKey": "treadmill_running"}, "distance": 2270, "duration": 1861}) == "walk")
+ok("a slow real easy run stays a run", main._tl_type({"activityType": {"typeKey": "treadmill_running"}, "distance": 3490, "duration": 1801}) == "run")
+ok("name note detected (PR / ครั้งหน้า)", main._name_has_note("Seated Cable Row (V-handle · PR)") and main._name_has_note("Incline DB Curl (45° · ครั้งหน้า 10kg เป้า 10-12)"))
+ok("real variation is not flagged", not main._name_has_note("Hip Abduction (นั่งตรง — ท่าหลัก)") and not main._name_has_note("Single-Leg Calf Raise (riser)") and not main._name_has_note("Incline DB Curl (45°)"))
+main.get_config = _gc_sv
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

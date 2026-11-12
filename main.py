@@ -547,6 +547,11 @@ def _tl_type(a):
     if "muay" in name or "boxing" in t or "kickbox" in t:
         return "muay-thai"
     if "run" in t or "run" in name:
+        # the treadmill files an incline WALK as treadmill_running; slower than 11:30/km is not a run
+        # (his easiest real runs are ~9:30/km) — calling it a run corrupts 80/20 and run-volume reads
+        dist, dur = a.get("distance") or 0, a.get("duration") or 0
+        if dist >= 500 and dur and (dur / 60.0) / (dist / 1000.0) > 11.5:
+            return "walk"
         return "run"
     if "cycl" in t or "bik" in t or "ride" in name:
         return "ride"
@@ -1871,6 +1876,19 @@ def _foodlog_label(d, name):
         return None
 
 
+_NAME_NOTE = ("pr", "ครั้งหน้า", "ล้า", "ตามที่ตกลง", "ต่ำสุด", "back-off", "ดรอป", "drop", "set", "เซ็ต", "kg", "โดน", "rir")
+
+
+def _name_has_note(name):
+    """A lift name whose parenthetical carries a session note rather than a variation."""
+    import re as _re
+    n = (name or "").lower()
+    inside = " ".join(_re.findall(r"\(([^)]*)\)", n))
+    tail = _re.sub(r"\([^)]*\)", " ", n)
+    return any(_re.search(r"(?<![a-z])" + _re.escape(k) + r"(?![a-z])", inside) for k in _NAME_NOTE) \
+        or bool(_re.search(r"\b(back-off|set\s*\d)", tail))
+
+
 @mcp.tool()
 def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
     """Log a weight-training session as a clean lift table on its TrainingLog day page.
@@ -1987,6 +2005,10 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
                 "total_volume": total_vol, "error": str(e)}
     out = {"date": d, "session": sess, "page_id": row_id, "status": "saved",
            "lifts": len(parsed), "total_volume": total_vol}
+    _noisy = sorted({l[0] for l in parsed if _name_has_note(l[0])})
+    if _noisy:
+        out["name_warning"] = {"lifts": _noisy, "fix": "Notes (PR / ครั้งหน้า… / ล้า / set N / kg) do not belong in the "
+                               "lift NAME — they split its history. Resave with the clean name; put the note in coach_notes."}
     _date_stamp(out, d)
     if _lbl == "labelled":
         out["foodlog_label"] = sess
@@ -2715,10 +2737,12 @@ def _misses_ds():
     import re as _re
     for line in (get_config() or "").splitlines():
         if line.strip().upper().startswith("MISSES"):
-            m = _re.search(r"collection://([0-9a-f-]{32,36})", line)
+            # bare uuid on purpose: Notion turns a typed `collection://<id>` into a mention, and
+            # get_config (plain_text) then sees NOTHING — the tool silently failed for 9 days (D234-243)
+            m = _re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})", line)
             if m:
                 return m.group(1)
-    return None
+    return os.environ.get("NOTION_MISSES_DS") or None
 
 
 @mcp.tool()
@@ -2730,7 +2754,7 @@ def log_coach_miss(miss: str, category: str = "other", bank_said: str = "", rule
     bank_said = his words, rule_fix = the rule that would have prevented it."""
     ds = _misses_ds()
     if not ds:
-        return {"error": "no MISSES line with a collection:// id in Config"}
+        return {"error": "no CoachMisses id: Config MISSES line needs ds_id=<uuid> (plain text) — tell Bank the miss log is broken"}
     cats = {"food-table", "date", "lift-prescription", "macro-calc", "plan-recall", "misread", "other"}
     d = day("")
     props = {"miss": {"title": [{"text": {"content": (miss or "?")[:200]}}]},
