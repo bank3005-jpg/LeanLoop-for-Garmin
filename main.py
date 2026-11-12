@@ -2570,6 +2570,140 @@ def _safe_rows(d):
 # per exercise before prescribing"; a rule that needs N separate calls gets skipped. This returns
 # today's PLAN slot + every planned lift + its last session in ONE call, so there is nothing to skip.
 
+# ---------------------------------------------------------------- per-lift progression verdict
+# lift_plan used to hand the coach only "last session" and leave the up/hold/down call to it —
+# so the call differed chat to chat, and it had no idea what the gym can actually load (a VIVE
+# barbell moves in 5 kg jumps: 50 -> 55 is +10%). The verdict is now computed here, the same
+# way every time: double progression inside the plan's rep range, on loads that exist.
+
+_STEP_DEFAULT = {"barbell": 5.0, "db": 2.5, "machine": 2.3, "assist": 4.7}
+
+
+def _gym_steps():
+    """Load increments from Config `GYM|barbell=5|db=2.5|machine=2.3|assist=4.7` (defaults if absent)."""
+    st = dict(_STEP_DEFAULT)
+    try:
+        for line in (get_config() or "").splitlines():
+            if line.strip().upper().startswith("GYM|") or line.strip().upper().startswith("GYM\\|"):
+                for part in line.replace("\\|", "|").split("|")[1:]:
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        try:
+                            if k.strip().lower() in st:
+                                st[k.strip().lower()] = float(v.strip().split()[0])
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    return st
+
+
+def _lift_kind(name):
+    n = (name or "").lower()
+    if "assist" in n:
+        return "assist"
+    if any(k in n for k in ("db", "dumbbell", "lunge", "calf", "curl")):
+        return "db"
+    if any(k in n for k in ("barbell", "squat", "rdl", "deadlift", "smith")):
+        return "barbell"
+    return "machine"
+
+
+def _parse_target(target):
+    """'3-4×8-12(...)' -> (min_sets, rep_lo, rep_hi); None if unreadable."""
+    import re as _re
+    m = _re.search(r"(\d+)(?:-(\d+))?\s*[×x]\s*(\d+)(?:-(\d+))?", target or "")
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(3)), int(m.group(4) or m.group(3))
+
+
+def _fmt_kg(x):
+    x = round(float(x), 1)
+    return int(x) if x == int(x) else x
+
+
+def _session_main(rows):
+    """One session's rows -> (main_kg, reps at main load per set, rirs). Main load = the load with
+    the most sets (tie -> heavier), so ramp-up and drop sets don't pose as the working weight."""
+    by = {}
+    for r in rows:
+        if r.get("kg") is None or not r.get("reps"):
+            continue
+        by.setdefault(float(r["kg"]), []).append(r)
+    if not by:
+        return None, [], []
+    main = max(by, key=lambda k: (sum(int(r.get("sets") or 1) for r in by[k]), k))
+    reps, rirs = [], []
+    for r in by[main]:
+        for _ in range(int(r.get("sets") or 1)):
+            reps.append(int(r["reps"]))
+            rirs.append(r.get("rir"))
+    return main, reps, rirs
+
+
+def _lift_suggest(name, target, sessions, steps=None):
+    """sessions = [(date, rows)] oldest->newest. -> {'trend': [...], 'suggest': {...}} or {}."""
+    steps = steps or _STEP_DEFAULT
+    sess = [(d, *_session_main(rows)) for d, rows in sessions]
+    sess = [s for s in sess if s[1] is not None and s[2]]
+    if not sess:
+        return {}
+    trend = [f"{d[5:]} {_fmt_kg(kg)}×{','.join(str(x) for x in reps)}" for d, kg, reps, _ in sess[-4:]]
+    out = {"trend": trend}
+    tgt = _parse_target(target)
+    if not tgt:
+        return out
+    need_sets, lo, hi = tgt
+    d, kg, reps, rirs = sess[-1]
+    kind = _lift_kind(name)
+    step = steps.get(kind, 2.3)
+    inverse = kind == "assist"  # less assistance = harder
+    harder = max(0.0, kg - step) if inverse else kg + step
+    easier = kg + step if inverse else max(0.0, kg - step)
+    word_up = "ลดน้ำหนักช่วย" if inverse else "ขึ้นน้ำหนัก"
+    same = 1
+    for pd, pkg, preps, _ in reversed(sess[:-1]):
+        if abs(pkg - kg) < 0.01:
+            same += 1
+        else:
+            break
+    top = all(r >= hi for r in reps)
+    short = [r for r in reps if r < lo]
+    sg = {"based_on": d}
+    if top and len(reps) >= need_sets:
+        best = max(reps)
+        exp = None
+        if not inverse and kg > 0 and harder > 0:
+            exp = int(30 * ((kg * (1 + best / 30.0)) / harder - 1))
+        sg.update({"verdict": "increase", "kg": _fmt_kg(harder),
+                   "reps": f"{lo}-{hi}" if exp is None else f"{max(1, min(exp, hi))}+ (เป้า {lo}-{hi})",
+                   "why": f"ครบ {len(reps)} เซ็ตที่ {hi}+ เรป ({_fmt_kg(kg)}×{','.join(map(str, reps))}) → {word_up}"})
+        if not inverse and kg > 0 and step / kg > 0.075:
+            sg["note"] = f"ขั้นต่ำของอุปกรณ์คือ +{_fmt_kg(step)} kg (= +{round(step / kg * 100)}%) เรปจะตกลงช่วงแรก ถือว่าปกติ"
+    elif top:
+        sg.update({"verdict": "hold", "kg": _fmt_kg(kg), "reps": f"{hi} × {need_sets} เซ็ต",
+                   "why": f"ถึง {hi} เรปแล้วแต่ได้แค่ {len(reps)} เซ็ตที่น้ำหนักนี้ (แผน {need_sets}) → ทำให้ครบเซ็ตก่อนขึ้น"})
+    elif len(short) >= 2 or (short and len(reps) == 1):
+        sg.update({"verdict": "reduce", "kg": _fmt_kg(easier), "reps": f"{lo}-{hi}",
+                   "why": f"{len(short)} เซ็ตได้ต่ำกว่า {lo} เรป ({_fmt_kg(kg)}×{','.join(map(str, reps))}) → หนักเกินช่วงเป้า"})
+    else:
+        goal = [min(hi, r + 1) for r in reps] + [lo] * max(0, need_sets - len(reps))
+        sg.update({"verdict": "hold", "kg": _fmt_kg(kg), "reps": ",".join(map(str, goal)),
+                   "why": f"ยังไม่ถึง {hi} ครบทุกเซ็ต ({','.join(map(str, reps))}) → น้ำหนักเดิม เก็บเรปเพิ่ม"})
+    known = [r for r in rirs if r is not None]
+    if sg["verdict"] == "hold" and known and min(known) >= 2 and not short:
+        sg["note"] = "RIR เหลือ ≥2 ทุกเซ็ต — ดันเรปให้สุดช่วงได้เลยวันนี้"
+    if same >= 3 and sg["verdict"] != "increase":
+        prev_total = sum(sess[-2][2])
+        if sum(reps) <= prev_total:
+            sg["stalled"] = f"ค้างที่ {_fmt_kg(kg)} kg มา {same} ครั้ง เรปรวมไม่เพิ่ม — ดูนอน/กิน/ลำดับท่าก่อนโทษแรง"
+        else:
+            sg["sessions_at_load"] = same
+    out["suggest"] = sg
+    return out
+
+
 _SLOT_NAMES = {"legs_a": "Legs A", "legs_b": "Legs B", "push": "Push", "pull": "Pull"}
 _WEEKDAY_KEYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _TOK_SYN = {"db": "dumbbell", "delt": "deltoid", "delts": "deltoid", "oh": "overhead",
@@ -2690,6 +2824,7 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
                      "kg": num("load"), "sets": num("sets"), "reps": num("reps"), "rir": num("rir"),
                      "e1rm": num("e1rm"), "_tok": _lift_tokens(nm)})
     monday = (d - _td(days=d.weekday())).isoformat()
+    steps = _gym_steps()
     out = []
     for name, target in lifts:
         alts = [_lift_tokens(a) for a in _plan_alternatives(name)]
@@ -2704,6 +2839,13 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
                             "best_e1rm": max((h["e1rm"] or 0) for h in past if h["date"] == last_d) or None}
             if prev_ds:
                 item["prev_best_e1rm"] = max((h["e1rm"] or 0) for h in past if h["date"] == prev_ds[-1]) or None
+            by_date = {}
+            for h in past:
+                by_date.setdefault(h["date"], []).append(h)
+            try:
+                item.update(_lift_suggest(name, target, sorted(by_date.items()), steps))
+            except Exception:
+                pass  # the verdict is a convenience — never let it break the plan
         done = sorted({h["date"] for h in mine if monday <= h["date"] <= d.isoformat()})
         if done:
             item["done_this_week"] = done
@@ -2724,8 +2866,44 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
                              for r in tl), key=lambda x: x["date"] or "")
         except Exception as e:
             recent = {"error": f"traininglog-read-failed: {str(e)[:80]} — do NOT conclude he skipped anything"}
+    # Order last time vs the plan: a lift done later than planned was pre-fatigued, so a drop there
+    # is not lost strength (D240: Shoulder Press 37.6 -> 30.6 after Lateral Raise went first).
+    try:
+        last_dates = {it["last"]["date"] for it in out if it.get("last")}
+        for ld in sorted(last_dates):
+            pids = [r["id"] for r in (tl if isinstance(recent, list) else [])
+                    if ((r.get("properties", {}).get("date") or {}).get("date") or {}).get("start") == ld
+                    and ((r.get("properties", {}).get("type") or {}).get("select") or {}).get("name") == "weights"]
+            order = []
+            for pid in pids:
+                for row in _parse_lift_table(pid):
+                    tk = _lift_tokens(row[0])
+                    if not order or order[-1] != tk:
+                        order.append(tk)
+            if not order:
+                continue
+            pos = {}
+            for i, (nm, _t) in enumerate(lifts):
+                al = [_lift_tokens(a) for a in _plan_alternatives(nm)]
+                hit = next((j for j, tk in enumerate(order) if any(a and a <= tk for a in al)), None)
+                if hit is not None:
+                    pos[nm] = (i, hit)
+            ranks = {nm: r for r, (nm, _) in enumerate(sorted(pos.items(), key=lambda kv: kv[1][1]))}
+            plan_ranks = {nm: r for r, (nm, _) in enumerate(sorted(pos.items(), key=lambda kv: kv[1][0]))}
+            for it in out:
+                nm = it["lift"]
+                if it.get("last") and it["last"]["date"] == ld and nm in ranks and ranks[nm] > plan_ranks[nm]:
+                    it["order_last_time"] = (f"ครั้งก่อนเล่นเป็นท่าที่ {ranks[nm] + 1} (แผน: ท่าที่ {plan_ranks[nm] + 1}) "
+                                             "— ล้าสะสมก่อนถึงท่านี้ ตัวเลขครั้งก่อนต่ำกว่าแรงจริง")
+    except Exception:
+        pass
     return {"date": d.isoformat(), "weekday": _WEEKDAY_KEYS[d.weekday()], "session": _SLOT_NAMES[key],
             "lookback_weeks": int(weeks), "lifts": out,
+            "how_to_use": "`suggest` = today's starting prescription (verdict + kg that the gym can load + rep "
+                          "goal + why), computed the same way every time; `trend` = his last 4 sessions. Use "
+                          "suggest.kg / suggest.reps as วันนี้(เป้า) and give the why in a few words. Override "
+                          "only for something the numbers can't see (pain, a note he just told you, "
+                          "`order_last_time`) and say that you did.",
             "recent_sessions": recent,
             "recent_note": "This (TrainingLog, last 4 weeks) is the ONLY source for 'did he train / skip'. "
                            "Garmin activities miss every chat-logged weight session.",

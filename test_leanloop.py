@@ -1198,5 +1198,30 @@ ok("name note detected (PR / ครั้งหน้า)", main._name_has_note(
 ok("real variation is not flagged", not main._name_has_note("Hip Abduction (นั่งตรง — ท่าหลัก)") and not main._name_has_note("Single-Leg Calf Raise (riser)") and not main._name_has_note("Incline DB Curl (45°)"))
 main.get_config = _gc_sv
 
+# ------------------------------------------------- _lift_suggest: one verdict, computed the same way every time
+_R = lambda kg, reps, rir=None, sets=1: {"kg": kg, "sets": sets, "reps": reps, "rir": rir}
+_inc = [("2026-10-27", [_R(50, 5), _R(50, 8, None, 2), _R(50, 6), _R(50, 5)]),
+        ("2026-11-03", [_R(50, 8, 2.5), _R(50, 10, 1.5), _R(50, 9, 1)]),
+        ("2026-11-09", [_R(50, 10, 1), _R(50, 9, 0), _R(50, 8, 0)])]
+_s = main._lift_suggest("Incline Barbell Press", "3×8-10(⭐)", _inc)
+ok("suggest: real Incline data -> hold 50, chase reps (not a blind +5)", _s["suggest"]["verdict"] == "hold" and _s["suggest"]["kg"] == 50 and _s["suggest"]["reps"] == "10,10,9")
+ok("suggest: trend = last sessions in one line each", _s["trend"][-1] == "11-09 50×10,9,8" and len(_s["trend"]) == 3)
+_s = main._lift_suggest("Incline Barbell Press", "3×8-10", [("2026-11-16", [_R(50, 10, 1, 3)])])
+ok("suggest: all sets at top of range -> increase by the BARBELL step (55, not 52.5)", _s["suggest"]["verdict"] == "increase" and _s["suggest"]["kg"] == 55 and "note" in _s["suggest"])
+_s = main._lift_suggest("Single-Arm Cable OH Triceps Ext", "3×10-12", [("2026-11-03", [_R(12, 5, 0), _R(12, 7, 0, 2)])])
+ok("suggest: below the range on 2+ sets -> reduce one machine step", _s["suggest"]["verdict"] == "reduce" and _s["suggest"]["kg"] == 9.7)
+_s = main._lift_suggest("Assisted Chin-up/Lat Pulldown", "3-4×6-12", [("2026-11-10", [_R(70.3, 12, 1, 3)])])
+ok("suggest: assisted lift progresses by LESS assistance", _s["suggest"]["verdict"] == "increase" and _s["suggest"]["kg"] == 65.6)
+_s = main._lift_suggest("Back/Front Squat", "4×5-8(หลัก)", [("2026-10-26", [_R(50, 12), _R(60, 12), _R(70, 8), _R(80, 8, 0.5)])])
+ok("suggest: one top set on a pyramid -> hold until all sets are there", _s["suggest"]["verdict"] == "hold" and _s["suggest"]["kg"] == 80 and "4" in _s["suggest"]["reps"])
+_st = [("2026-10-01", [_R(40, 9, 0, 3)]), ("2026-10-08", [_R(40, 9, 0, 3)]), ("2026-10-15", [_R(40, 9, 0, 3)])]
+ok("suggest: same load 3 sessions, reps flat -> stalled flag", "stalled" in main._lift_suggest("Machine Chest Press", "3×8-12", _st)["suggest"])
+ok("suggest: unreadable target -> trend only, no invented verdict", "suggest" not in main._lift_suggest("X", "ตามสบาย", [("2026-10-01", [_R(40, 9)])]))
+ok("suggest: no usable rows -> {}", main._lift_suggest("X", "3×8", [("2026-10-01", [_R(None, None)])]) == {})
+_gc_sv2 = main.get_config
+main.get_config = lambda: "GYM|barbell=2.5|db=2|machine=5 (pin)|assist=5"
+ok("gym steps: Config GYM line overrides defaults", main._gym_steps() == {"barbell": 2.5, "db": 2.0, "machine": 5.0, "assist": 5.0})
+main.get_config = _gc_sv2
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
