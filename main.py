@@ -2639,7 +2639,10 @@ def _session_main(rows):
         for _ in range(int(r.get("sets") or 1)):
             reps.append(int(r["reps"]))
             rirs.append(r.get("rir"))
-    return main, reps, rirs
+    # the flat Lifts DB keeps no set order -> show high->low (the usual fatigue order) rather than
+    # whatever order Notion happened to return
+    pairs = sorted(zip(reps, rirs), key=lambda x: -x[0])
+    return main, [a for a, _ in pairs], [b for _, b in pairs]
 
 
 def _lift_suggest(name, target, sessions, steps=None):
@@ -2670,6 +2673,7 @@ def _lift_suggest(name, target, sessions, steps=None):
             break
     top = all(r >= hi for r in reps)
     short = [r for r in reps if r < lo]
+    far = [r for r in reps if r < lo - 2]  # clearly out of range, not just a rep or two shy
     sg = {"based_on": d}
     if top and len(reps) >= need_sets:
         best = max(reps)
@@ -2684,13 +2688,16 @@ def _lift_suggest(name, target, sessions, steps=None):
     elif top:
         sg.update({"verdict": "hold", "kg": _fmt_kg(kg), "reps": f"{hi} × {need_sets} เซ็ต",
                    "why": f"ถึง {hi} เรปแล้วแต่ได้แค่ {len(reps)} เซ็ตที่น้ำหนักนี้ (แผน {need_sets}) → ทำให้ครบเซ็ตก่อนขึ้น"})
-    elif len(short) >= 2 or (short and len(reps) == 1):
+    elif len(far) >= 2 or (far and len(reps) == 1):
         sg.update({"verdict": "reduce", "kg": _fmt_kg(easier), "reps": f"{lo}-{hi}",
-                   "why": f"{len(short)} เซ็ตได้ต่ำกว่า {lo} เรป ({_fmt_kg(kg)}×{','.join(map(str, reps))}) → หนักเกินช่วงเป้า"})
+                   "why": f"{len(far)} เซ็ตหลุดช่วงเป้าไกล (ต่ำกว่า {lo - 2} เรป: {_fmt_kg(kg)}×{','.join(map(str, reps))}) → หนักเกิน"})
     else:
         goal = [min(hi, r + 1) for r in reps] + [lo] * max(0, need_sets - len(reps))
         sg.update({"verdict": "hold", "kg": _fmt_kg(kg), "reps": ",".join(map(str, goal)),
                    "why": f"ยังไม่ถึง {hi} ครบทุกเซ็ต ({','.join(map(str, reps))}) → น้ำหนักเดิม เก็บเรปเพิ่ม"})
+    if len(sess) >= 2 and not inverse and sess[-2][1] > kg + 0.01:
+        sg["dropped_from"] = (f"ครั้งก่อนหน้านั้นใช้ {_fmt_kg(sess[-2][1])} kg — ถ้าครั้งล่าสุดลดเพราะล้า/ลำดับท่า "
+                              f"ให้กลับไปลอง {_fmt_kg(sess[-2][1])} ตอนสด")
     known = [r for r in rirs if r is not None]
     if sg["verdict"] == "hold" and known and min(known) >= 2 and not short:
         sg["note"] = "RIR เหลือ ≥2 ทุกเซ็ต — ดันเรปให้สุดช่วงได้เลยวันนี้"
@@ -2888,13 +2895,14 @@ def lift_plan(session: str = "", date: str = "", weeks: int = 12) -> dict:
                 hit = next((j for j, tk in enumerate(order) if any(a and a <= tk for a in al)), None)
                 if hit is not None:
                     pos[nm] = (i, hit)
-            ranks = {nm: r for r, (nm, _) in enumerate(sorted(pos.items(), key=lambda kv: kv[1][1]))}
-            plan_ranks = {nm: r for r, (nm, _) in enumerate(sorted(pos.items(), key=lambda kv: kv[1][0]))}
             for it in out:
                 nm = it["lift"]
-                if it.get("last") and it["last"]["date"] == ld and nm in ranks and ranks[nm] > plan_ranks[nm]:
-                    it["order_last_time"] = (f"ครั้งก่อนเล่นเป็นท่าที่ {ranks[nm] + 1} (แผน: ท่าที่ {plan_ranks[nm] + 1}) "
-                                             "— ล้าสะสมก่อนถึงท่านี้ ตัวเลขครั้งก่อนต่ำกว่าแรงจริง")
+                if not (it.get("last") and it["last"]["date"] == ld and nm in pos):
+                    continue
+                ahead = [o for o, (pi, hi_) in pos.items() if pi > pos[nm][0] and hi_ < pos[nm][1]]
+                if ahead:
+                    it["order_last_time"] = (f"ครั้งก่อนเล่น {', '.join(ahead)} ก่อนท่านี้ (แผนให้เล่นทีหลัง) "
+                                             "— ถ้าตัวเลขครั้งก่อนตก อาจเป็นเพราะล้ามาก่อน ไม่ใช่แรงลด")
     except Exception:
         pass
     return {"date": d.isoformat(), "weekday": _WEEKDAY_KEYS[d.weekday()], "session": _SLOT_NAMES[key],
