@@ -1265,6 +1265,9 @@ main.client = lambda: _GSf(); main._fit_records = lambda aid: []
 _ra = main.analyze_activity()
 ok("analyze: road run -> previous_same_type is the ROAD run, treadmill left out", _ra.get("previous_same_type", {}).get("activityId") == 2 and len(_ra.get("same_type_history", [])) == 1 and _ra.get("surface") == "outdoor")
 ok("analyze: says how many other-surface sessions were excluded", "1 session" in _ra.get("comparison_note", ""))
+_GSf._all.insert(2, {"activityId": 9, "activityType": {"typeKey": "running"}, "startTimeLocal": "2026-11-15 18:48:00", "duration": 180, "distance": 467, "averageHR": 138})
+main._call_cache.clear()
+ok("analyze: a warm-up fragment is not the comparator (latest REAL same-surface run is)", main.analyze_activity().get("previous_same_type", {}).get("activityId") == 2)
 main.client, main._fit_records = _sva
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))

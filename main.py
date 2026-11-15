@@ -3279,7 +3279,13 @@ def analyze_activity(activity_id: str = "") -> dict:
                         res["comparison_note"] += " No earlier session on this surface in 60 days: say there is no like-for-like baseline yet."
                 prev_sorted = sorted(prev, key=lambda a: str(a.get("startTimeLocal", "")))
                 if prev_sorted:
-                    p = prev_sorted[-1]
+                    # the comparator must be a real session, not the warm-up jog logged 6 minutes
+                    # earlier: take the latest one at least half as long as this one (else the latest)
+                    _d0, _t0 = meta.get("distance") or 0, meta.get("duration") or 0
+                    _real = [a for a in prev_sorted
+                             if ((_d0 and (a.get("distance") or 0) >= 0.5 * _d0)
+                                 or (not _d0 and (a.get("duration") or 0) >= 0.5 * _t0))]
+                    p = (_real or prev_sorted)[-1]
                     res["previous_same_type"] = {k: p.get(k) for k in _ACT_KEEP if p.get(k) is not None}
 
                     # trend history: last up to 8 same-type sessions, compact pace@HR —
