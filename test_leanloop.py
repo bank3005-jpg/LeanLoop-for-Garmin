@@ -1226,5 +1226,46 @@ main.get_config = lambda: "GYM|barbell=2.5|db=2|machine=5 (pin)|assist=5"
 ok("gym steps: Config GYM line overrides defaults", main._gym_steps() == {"barbell": 2.5, "db": 2.0, "machine": 5.0, "assist": 5.0})
 main.get_config = _gc_sv2
 
+# ------------------------------------------------- D244/D245/D247: checks that ride on the data path
+ok("density: baked pumpkin crisps at fresh-pumpkin kcal are flagged", main._density_flags([["15:00", "Clean Paradise ฟักทองอบกรอบ 100g", 75, 2, 15, 1]])[0]["kcal_per_100g"] == 75)
+ok("density: a correctly dense crisp is not flagged", main._density_flags([["15:00", "Clean Paradise โปรตีนเกษตรอบกรอบ 25g", 95, 12.5, 10, 0.5]]) == [])
+ok("density: fresh food / no grams is never flagged", main._density_flags([["12:00", "ฟักทองผัดไข่ 245g", 227, 6, 21, 13], ["12:00", "ผักเคลกรอบ", 40, 3, 5, 1]]) == [])
+_svfl = (main._foodlib_all, main._cget, main._cput)
+main._cget = lambda k: None; main._cput = lambda *a, **k: None
+main._foodlib_all = lambda: [{"page_id": "x", "name": "ก๋วยเตี๋ยวเรือ — ร้านลุงป้า", "serving": "1 ชาม ~420g", "kcal": 609, "p": 28.9, "c": 70, "f": 22, "notes": None}]
+_h = main._foodlib_hints([["12:30", "ก๋วยเตี๋ยวเรือ ร้านลุงป้า 1 ชาม", 480, 22, 60, 15]])
+ok("foodlib: a generic estimate next to a weighed library entry -> hint with the library values", _h and _h[0]["foodlib"]["kcal"] == 609)
+ok("foodlib: a scaled portion of the library entry is NOT flagged", main._foodlib_hints([["12:30", "ก๋วยเตี๋ยวเรือ ร้านลุงป้า ครึ่งชาม", 304.5, 14.45, 35, 11]]) == [])
+ok("foodlib: unrelated food -> no hint", main._foodlib_hints([["08:00", "ไข่ต้ม 2 ฟอง", 140, 12, 1, 10]]) == [])
+def _boom(): raise RuntimeError("notion down")
+main._foodlib_all = _boom
+ok("foodlib: library unreadable -> no hint, never blocks the meal write", main._foodlib_hints([["08:00", "ไข่ต้ม", 70, 6, 0, 5]]) == [])
+main._foodlib_all, main._cget, main._cput = _svfl
+_T0 = _dt.datetime(2026, 11, 15, 18, 54)
+_road = [{"timestamp": _T0 + _dt.timedelta(seconds=i), "heart_rate": 160, "cadence": 84, "distance": 2.55 * i} for i in range(1500)]
+ok("fit: a file with no speed field gets speed from the distance counter", abs(main._fill_speed([dict(r) for r in _road])[10]["speed"] - 2.55) < 0.01)
+_pc = main._pacing_calc(main._fill_speed([dict(r) for r in _road]))
+ok("pacing: a continuous road run is RUN time, not one long pause", _pc.get("run_min", 0) > 24 and _pc.get("pause_min") == 0)
+ok("decoupling: road run now has moving data", "decoupling_pct" in main._decoupling_calc(main._fill_speed([dict(r) for r in _road])))
+_has = [{"timestamp": _T0, "speed": 3.0, "distance": 0}, {"timestamp": _T0 + _dt.timedelta(seconds=1), "distance": 9}]
+ok("fit: files that DO carry speed are left alone", "speed" not in main._fill_speed(_has)[1])
+# analyze_activity: road run is compared only with road runs
+main.call = _orig_call; main._call_cache.clear()
+class _GSf:
+    _all = [{"activityId": 1, "activityType": {"typeKey": "treadmill_running"}, "startTimeLocal": "2026-11-04 19:00:00", "duration": 1800, "distance": 4600, "averageHR": 157},
+            {"activityId": 2, "activityType": {"typeKey": "running"}, "startTimeLocal": "2026-10-25 18:00:00", "duration": 2010, "distance": 5000, "averageHR": 167},
+            {"activityId": 3, "activityType": {"typeKey": "running"}, "startTimeLocal": "2026-11-15 18:54:00", "duration": 1963, "distance": 5013, "averageHR": 164}]
+    def get_activities(s, a, b): return [s._all[2]]
+    def get_activity(s, aid): return {}
+    def get_activity_splits(s, aid): return {"lapDTOs": []}
+    def get_activity_hr_in_timezones(s, aid): return []
+    def get_activities_by_date(s, *a): return list(s._all)
+_sva = (main.client, main._fit_records)
+main.client = lambda: _GSf(); main._fit_records = lambda aid: []
+_ra = main.analyze_activity()
+ok("analyze: road run -> previous_same_type is the ROAD run, treadmill left out", _ra.get("previous_same_type", {}).get("activityId") == 2 and len(_ra.get("same_type_history", [])) == 1 and _ra.get("surface") == "outdoor")
+ok("analyze: says how many other-surface sessions were excluded", "1 session" in _ra.get("comparison_note", ""))
+main.client, main._fit_records = _sva
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

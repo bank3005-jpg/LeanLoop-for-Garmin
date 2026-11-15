@@ -1131,8 +1131,31 @@ def _fit_records(activity_id: str) -> list:
                           "power", "altitude", "distance"):
                     if frame.has_field(f) and frame.get_value(f) is not None:
                         row[f] = frame.get_value(f)
+                # Outdoor (GPS) runs on newer watches write ONLY enhanced_speed / enhanced_altitude —
+                # reading just `speed` made every road run look like one long pause (D247: run_min 0,
+                # pause_min 33, "not enough moving data"), while treadmill files still carry `speed`.
+                for src, dst in (("enhanced_speed", "speed"), ("enhanced_altitude", "altitude")):
+                    if dst not in row and frame.has_field(src) and frame.get_value(src) is not None:
+                        row[dst] = frame.get_value(src)
                 if row.get("timestamp") is not None:
                     recs.append(row)
+    return _fill_speed(recs)
+
+
+def _fill_speed(recs):
+    """Last resort when a FIT file has no speed field at all: derive it from the distance counter."""
+    if not recs or any(r.get("speed") is not None for r in recs):
+        return recs
+    prev = None
+    for r in recs:
+        if prev is not None and r.get("distance") is not None and prev.get("distance") is not None:
+            try:
+                dt = (r["timestamp"] - prev["timestamp"]).total_seconds()
+            except Exception:
+                dt = 0
+            if 0 < dt <= 10:
+                r["speed"] = max(0.0, (r["distance"] - prev["distance"]) / dt)
+        prev = r
     return recs
 
 
@@ -1461,6 +1484,104 @@ def _dropped_meals(existing, incoming):
     return [m for m in existing if _meal_key(m) not in inc]
 
 
+# ---------------------------------------------------------------- meal-write sanity checks (data path)
+# Two real misses, both "the playbook said so and it was skipped anyway":
+#  D244 - a weighed FoodLib entry existed (609 kcal) and the coach logged a generic guess (480).
+#  D245 - baked pumpkin CRISPS logged at fresh-pumpkin density (75 kcal/100g; real ~335).
+# So the server now checks every NEWLY added meal itself and says so in the write result.
+
+_DRY_WORDS = ("กรอบ", "อบแห้ง", "ตากแห้ง", "chips", "chip", "crisp", "dried", "jerky",
+              "แผ่นอบ", "freeze-dried", "ฟรีซดราย", "กราโนล่า", "granola")
+
+
+def _grams_in(name):
+    import re as _re
+    m = _re.search(r"(\d+(?:\.\d+)?)\s*(?:g|กรัม)(?![a-zก-๙])", (name or "").lower())
+    return float(m.group(1)) if m else None
+
+
+def _density_flags(meals):
+    """Dry / crisp foods are energy-dense (water is gone): ~3-6 kcal per gram. A 'crisp' logged
+    under 2.5 kcal/g was almost certainly priced like the fresh food."""
+    out = []
+    for m in meals:
+        nm = str(m[1]).lower()
+        g = _grams_in(nm)
+        try:
+            kc = float(m[2] or 0)
+        except Exception:
+            continue
+        if g and g >= 5 and kc > 0 and any(w in nm for w in _DRY_WORDS) and kc / g < 2.5:
+            out.append({"meal": m[1], "kcal_per_100g": round(kc / g * 100),
+                        "why": "อาหารแห้ง/กรอบปกติ 300-600 kcal/100g — ค่านี้ใกล้ของสด ตรวจฉลากหรือประเมินใหม่ "
+                               "(อย่าลดค่าเพราะเขาบอกว่า 'แคลน้อย/น้ำมันบาง')"})
+    return out
+
+
+def _foodlib_cached():
+    c = _cget(("foodlib_all",))
+    if c is not None:
+        return c
+    allf = _foodlib_all()
+    if allf is not None:
+        _cput(("foodlib_all",), allf, 600)
+    return allf
+
+
+def _foodlib_hints(meals):
+    """For each NEW meal: the closest FoodLib entry, unless the logged macros were clearly derived
+    from it (same kcal mix = a scaled portion of that entry). Best-effort; never raises."""
+    try:
+        allf = _foodlib_cached()
+    except Exception:
+        return []
+    if not allf:
+        return []
+    import re as _re
+    out = []
+    for m in meals:
+        raw = str(m[1])
+        q = _re.sub(r"[~≈]?\d+(?:\.\d+)?\s*(?:g|กรัม|ml|kcal|ชิ้น|ลูก|ถ้วย|จาน|ขวด|ซอง|scoop|สคูป)?", " ", raw.lower())
+        q = _re.sub(r"\([^)]*\)", " ", q).strip()
+        toks = _fl_tokens(q)
+        if not toks:
+            continue
+        best, bs = None, 0
+        for e in allf:
+            sc = _fl_score(e["name"], q, toks)
+            if sc > bs:
+                best, bs = e, sc
+        if not best or bs < 20 or not best.get("kcal"):
+            continue
+        try:
+            mk, lk = float(m[2] or 0), float(best["kcal"])
+            if mk <= 0:
+                continue
+            same_mix = all(abs((float(m[i] or 0) / mk) - (float(best.get(k) or 0) / lk)) < 0.004
+                           for i, k in ((3, "p"), (4, "c"), (5, "f")))
+        except Exception:
+            continue
+        if same_mix:
+            continue  # a scaled portion of the library entry — it WAS used
+        out.append({"meal": raw, "logged_kcal": m[2],
+                    "foodlib": {k: best.get(k) for k in ("name", "serving", "kcal", "p", "c", "f")}})
+    return out[:5]
+
+
+def _meal_checks(res, new_meals):
+    if not new_meals:
+        return
+    dens = _density_flags(new_meals)
+    if dens:
+        res["density_check"] = dens
+    hints = _foodlib_hints(new_meals)
+    if hints:
+        res["foodlib_check"] = {"matches": hints,
+                                "do": "FoodLib already has a close entry for these. If it is the same food and you "
+                                      "logged an estimate instead, resave the meal with the library values scaled "
+                                      "to his portion. If it is genuinely different, ignore."}
+
+
 def _date_stamp(res, d):
     """Stamp every dated WRITE with the server's real today, and shout when they differ.
 
@@ -1681,6 +1802,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
         row = _find_row(d)
         if row:
             _edited = []
+            _newm = []
             if parsed_meals is not None and not allow_remove:
                 # A meals write REPLACES the whole table. Two chats open on the same day means one of
                 # them can hold a stale copy; writing it blind silently deletes whatever the other
@@ -1696,6 +1818,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                 _was = {_meal_key(m): list(m[2:6]) for m in _cur}
                 _edited = [m for m in parsed_meals if _meal_key(m) in _was and
                            any(abs(float(a or 0) - float(b or 0)) > 0.5 for a, b in zip(_was[_meal_key(m)], m[2:6]))]
+                _newm = [m for m in parsed_meals if _meal_key(m) not in _was]
                 if _gone:
                     return {"date": d, "error": "would-drop-meals",
                             "dropped": _gone, "current_meals": _cur,
@@ -1718,6 +1841,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
                 res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
                 res["render_required"] = _render_directive(parsed_meals)
                 _date_stamp(res, d)
+                _meal_checks(res, _newm)
                 if _edited or allow_remove:
                     res["if_correction"] = ("You changed/removed an already-saved meal. If that is because "
                                             "Bank caught YOUR mistake (not new info from him), call "
@@ -1748,6 +1872,7 @@ def foodlog_upsert(date: str = "", kcal: float | None = None, p: float | None = 
             res["totals"] = {"kcal": kcal, "p": p, "c": c, "f": f}
             res["render_required"] = _render_directive(parsed_meals)
             _date_stamp(res, d)
+            _meal_checks(res, parsed_meals)
         return res
     except Exception as e:
         return {"error": str(e)}
@@ -3138,6 +3263,20 @@ def analyze_activity(activity_id: str = "") -> dict:
                 prev = [a for a in (g.get_activities_by_date(back, start_local, tkey) or [])
                         if str(a.get("activityId")) != str(aid)
                         and str(a.get("startTimeLocal", "")) < str(meta.get("startTimeLocal", ""))]
+                # Garmin's type filter is by PARENT type: asking for `running` also returns
+                # treadmill_running. Pace@HR on a belt and on the road are not comparable (D247: a
+                # road run was called "worse" against a treadmill run it actually beat on like-for-like).
+                _surf = lambda k: "treadmill" if ("treadmill" in k or "indoor" in k) else "outdoor"
+                _tk = lambda a: ((a.get("activityType") or {}).get("typeKey") or "").lower()
+                if "run" in tkey or "walk" in tkey:
+                    other = [a for a in prev if _surf(_tk(a)) != _surf(tkey.lower())]
+                    prev = [a for a in prev if _surf(_tk(a)) == _surf(tkey.lower())]
+                    res["surface"] = _surf(tkey.lower())
+                    res["comparison_note"] = (f"previous_same_type / same_type_history are {_surf(tkey.lower())}-only "
+                                              f"({len(other)} session(s) on the other surface left out) — never "
+                                              "compare pace@HR across treadmill and road.")
+                    if not prev and other:
+                        res["comparison_note"] += " No earlier session on this surface in 60 days: say there is no like-for-like baseline yet."
                 prev_sorted = sorted(prev, key=lambda a: str(a.get("startTimeLocal", "")))
                 if prev_sorted:
                     p = prev_sorted[-1]
