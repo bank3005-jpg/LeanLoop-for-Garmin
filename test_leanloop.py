@@ -1194,8 +1194,6 @@ _gc_sv = main.get_config
 ok("misses id: bare uuid on the MISSES line is found", (setattr(main, "get_config", lambda: "MISSES|CoachMisses ds_id=36e35bfd-e464-41ac-b7b7-2be0f1f44ea4 x"), main._misses_ds())[1] == "36e35bfd-e464-41ac-b7b7-2be0f1f44ea4")
 ok("incline walk on the treadmill is not a run", main._tl_type({"activityType": {"typeKey": "treadmill_running"}, "distance": 2270, "duration": 1861}) == "walk")
 ok("a slow real easy run stays a run", main._tl_type({"activityType": {"typeKey": "treadmill_running"}, "distance": 3490, "duration": 1801}) == "run")
-ok("name note detected (PR / ครั้งหน้า)", main._name_has_note("Seated Cable Row (V-handle · PR)") and main._name_has_note("Incline DB Curl (45° · ครั้งหน้า 10kg เป้า 10-12)"))
-ok("real variation is not flagged", not main._name_has_note("Hip Abduction (นั่งตรง — ท่าหลัก)") and not main._name_has_note("Single-Leg Calf Raise (riser)") and not main._name_has_note("Incline DB Curl (45°)"))
 main.get_config = _gc_sv
 
 # ------------------------------------------------- _lift_suggest: one verdict, computed the same way every time
@@ -1269,6 +1267,12 @@ _GSf._all.insert(2, {"activityId": 9, "activityType": {"typeKey": "running"}, "s
 main._call_cache.clear()
 ok("analyze: a warm-up fragment is not the comparator (latest REAL same-surface run is)", main.analyze_activity().get("previous_same_type", {}).get("activityId") == 2)
 main.client, main._fit_records = _sva
+
+_sp = [("2026-10-20", [_R(37.6, 12, 0), _R(37.6, 9, 0), _R(37.6, 8, 0)]), ("2026-11-03", [_R(37.6, 10, 0), _R(37.6, 9, 0), _R(37.6, 8, 1)]), ("2026-11-09", [_R(37.6, 4, 0), _R(30.6, 9, 0), _R(30.6, 8, 0)])]
+_s = main._lift_suggest("Machine Shoulder Press", "3×8-10", _sp)
+ok("suggest: one-off drop is NOT the anchor - start from the load he did in range (37.6)", _s["suggest"]["kg"] == 37.6 and "anchor_note" in _s["suggest"])
+_lr = [("2026-11-03", [_R(14.5, 10, 0), _R(14.5, 9, 0), _R(14.5, 8, 0)]), ("2026-11-09", [_R(12, 13, 0), _R(12, 12, 2), _R(12, 10, 0)])]
+ok("suggest: a drop after falling short of the range IS respected (stays at the lower load)", main._lift_suggest("Cable Lateral Raise", "3-4×10-15", _lr)["suggest"]["kg"] == 12)
 
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)

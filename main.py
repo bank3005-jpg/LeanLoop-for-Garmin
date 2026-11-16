@@ -2001,19 +2001,6 @@ def _foodlog_label(d, name):
         return None
 
 
-_NAME_NOTE = ("pr", "ครั้งหน้า", "ล้า", "ตามที่ตกลง", "ต่ำสุด", "back-off", "ดรอป", "drop", "set", "เซ็ต", "kg", "โดน", "rir")
-
-
-def _name_has_note(name):
-    """A lift name whose parenthetical carries a session note rather than a variation."""
-    import re as _re
-    n = (name or "").lower()
-    inside = " ".join(_re.findall(r"\(([^)]*)\)", n))
-    tail = _re.sub(r"\([^)]*\)", " ", n)
-    return any(_re.search(r"(?<![a-z])" + _re.escape(k) + r"(?![a-z])", inside) for k in _NAME_NOTE) \
-        or bool(_re.search(r"\b(back-off|set\s*\d)", tail))
-
-
 @mcp.tool()
 def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None = None, page_id: str = "") -> dict:
     """Log a weight-training session as a clean lift table on its TrainingLog day page.
@@ -2130,10 +2117,6 @@ def weightlog_upsert(date: str = "", session: str = "", lifts: list | str | None
                 "total_volume": total_vol, "error": str(e)}
     out = {"date": d, "session": sess, "page_id": row_id, "status": "saved",
            "lifts": len(parsed), "total_volume": total_vol}
-    _noisy = sorted({l[0] for l in parsed if _name_has_note(l[0])})
-    if _noisy:
-        out["name_warning"] = {"lifts": _noisy, "fix": "Notes (PR / ครั้งหน้า… / ล้า / set N / kg) do not belong in the "
-                               "lift NAME — they split its history. Resave with the clean name; put the note in coach_notes."}
     _date_stamp(out, d)
     if _lbl == "labelled":
         out["foodlog_label"] = sess
@@ -2796,10 +2779,27 @@ def _lift_suggest(name, target, sessions, steps=None):
             same += 1
         else:
             break
+    anchored = None
+    if (not inverse and same == 1 and len(sess) >= 2 and sess[-2][1] > kg + 0.01
+            and all(r >= lo for r in sess[-2][2])):
+        # Bank's rule (D241): a one-off drop is not a regression — never prescribe from the worst
+        # session. He did the heavier load inside the rep range the time before, so start from that.
+        anchored = (d, kg)
+        d, kg, reps, rirs = sess[-2]
+        harder, easier = kg + step, max(0.0, kg - step)
+        same = 1
+        for pd, pkg, preps, _ in reversed(sess[:-2]):
+            if abs(pkg - kg) < 0.01:
+                same += 1
+            else:
+                break
     top = all(r >= hi for r in reps)
     short = [r for r in reps if r < lo]
     far = [r for r in reps if r < lo - 2]  # clearly out of range, not just a rep or two shy
     sg = {"based_on": d}
+    if anchored:
+        sg["anchor_note"] = (f"ครั้งล่าสุด ({anchored[0][5:]}) ลดเป็น {_fmt_kg(anchored[1])} kg ครั้งเดียว แต่ครั้งก่อนหน้านั้นทำ "
+                             f"{_fmt_kg(kg)} kg ได้ครบช่วงเรป → ยึด {_fmt_kg(kg)} เป็นจุดตั้งต้น (ดูเหตุผลที่ลดในชื่อท่า/โน้ตก่อน)")
     if top and len(reps) >= need_sets:
         best = max(reps)
         exp = None
@@ -2820,14 +2820,14 @@ def _lift_suggest(name, target, sessions, steps=None):
         goal = [min(hi, r + 1) for r in reps] + [lo] * max(0, need_sets - len(reps))
         sg.update({"verdict": "hold", "kg": _fmt_kg(kg), "reps": ",".join(map(str, goal)),
                    "why": f"ยังไม่ถึง {hi} ครบทุกเซ็ต ({','.join(map(str, reps))}) → น้ำหนักเดิม เก็บเรปเพิ่ม"})
-    if len(sess) >= 2 and not inverse and sess[-2][1] > kg + 0.01:
+    if not anchored and len(sess) >= 2 and not inverse and sess[-2][1] > kg + 0.01:
         sg["dropped_from"] = (f"ครั้งก่อนหน้านั้นใช้ {_fmt_kg(sess[-2][1])} kg — ถ้าครั้งล่าสุดลดเพราะล้า/ลำดับท่า "
                               f"ให้กลับไปลอง {_fmt_kg(sess[-2][1])} ตอนสด")
     known = [r for r in rirs if r is not None]
     if sg["verdict"] == "hold" and known and min(known) >= 2 and not short:
         sg["note"] = "RIR เหลือ ≥2 ทุกเซ็ต — ดันเรปให้สุดช่วงได้เลยวันนี้"
     if same >= 3 and sg["verdict"] != "increase":
-        prev_total = sum(sess[-2][2])
+        prev_total = sum(sess[-3][2]) if anchored and len(sess) >= 3 else sum(sess[-2][2])
         if sum(reps) <= prev_total:
             sg["stalled"] = f"ค้างที่ {_fmt_kg(kg)} kg มา {same} ครั้ง เรปรวมไม่เพิ่ม — ดูนอน/กิน/ลำดับท่าก่อนโทษแรง"
         else:
