@@ -804,6 +804,48 @@ def _recovery_props(d):
 
 
 
+_SLEEP_COLS = ("bed_time", "wake_time")
+
+
+def _sleep_window(d):
+    """Bed / wake clock time (HH:MM, his local time) of the night ENDING the morning of D, from
+    Garmin's sleep window. {} when Garmin has no confirmed window yet (watch not synced / not worn)
+    — never a guess. Pure read, never raises."""
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        dto = (client().get_sleep_data(d) or {}).get("dailySleepDTO") or {}
+        a, b = dto.get("sleepStartTimestampLocal"), dto.get("sleepEndTimestampLocal")
+        if not a or not b or b <= a:
+            return {}
+        # *Local fields are local wall-clock encoded as if UTC -> format in UTC
+        hm = lambda ms: _dt.fromtimestamp(ms / 1000, _tz.utc).strftime("%H:%M")
+        return {"bed_time": hm(a), "wake_time": hm(b)}
+    except Exception:
+        return {}
+
+
+def _fill_sleep_window(row, d):
+    """Write bed_time / wake_time onto the FoodLog row of D — ISOLATED from everything else the
+    nightly close does: its own PATCH, only when the columns exist in the schema and are still
+    empty, and any failure is swallowed into a note (it can never block or roll back the
+    TDEE / sync / recovery write). Returns a short status for the closeday result, or None."""
+    props = (row or {}).get("properties") or {}
+    if not all(k in props for k in _SLEEP_COLS):
+        return None  # columns not in this schema -> do nothing
+    if any((props.get(k) or {}).get("rich_text") for k in _SLEEP_COLS):
+        return None  # already filled -> never overwrite
+    w = _sleep_window(d)
+    if not w:
+        return "no-sleep-data"
+    try:
+        _notion_write("PATCH", "/pages/" + row["id"], {"properties": {
+            k: {"rich_text": [{"text": {"content": w[k]}}]} for k in _SLEEP_COLS}})
+        return f"{w['bed_time']}-{w['wake_time']}"
+    except Exception as e:
+        return f"error: {str(e)[:80]}"
+
+
+
 _LABEL_SEP = " + "
 
 _RUN_LABEL = {"recovery-run": "Recovery Run", "tempo": "Tempo Run", "threshold": "Threshold Run",
@@ -927,6 +969,8 @@ def _close_one(d):
     row = _find_row(d)
     if not row:
         return {"date": d, "status": "no-foodlog-row", "trained": trained}
+    sw = _fill_sleep_window(row, d)  # isolated: own write, never raises
+    swk = {"sleep_window": sw} if sw else {}
     props = row.get("properties", {})
     kcal = (props.get("kcal") or {}).get("number")
     row_burn = (props.get("exercise_burn") or {}).get("number") or 0
@@ -944,7 +988,7 @@ def _close_one(d):
     else:
         base = os.environ.get("TDEE_BASELINE", "")
         if not base:
-            return {"date": d, "status": "no-garmin-data"}
+            return {"date": d, "status": "no-garmin-data", **swk}
         tdee = round(float(base) + row_burn)
         tag = "estimated"
     old = (props.get("tdee_est") or {}).get("number")
@@ -976,7 +1020,7 @@ def _close_one(d):
     rec = _recovery_props(d) if any((props.get(k) or {}).get("number") is None
                                     for k in ("sleep_score", "readiness")) else {}
     if not new_props and not rec:
-        return {"date": d, "status": "already-synced", "tdee": tdee, "trained": trained}
+        return {"date": d, "status": "already-synced", "tdee": tdee, "trained": trained, **swk}
     try:
         _notion_write("PATCH", "/pages/" + row["id"], {"properties": {**new_props, **rec}})
         wrote = list(new_props) + list(rec)
@@ -987,7 +1031,7 @@ def _close_one(d):
             _notion_write("PATCH", "/pages/" + row["id"], {"properties": new_props})
             wrote = list(new_props)
     return {"date": d, "status": "updated", "tdee": tdee, "tag": tag,
-            "wrote": wrote, "trained": trained}
+            "wrote": wrote, "trained": trained, **swk}
 
 
 def _update_progress(page_id):
@@ -1639,6 +1683,8 @@ def foodlog_get(date: str = "") -> dict:
             "exercise_type": txt("exercise_type"), "exercise_burn": num("exercise_burn"),
             "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
             "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None)}
+    if txt("bed_time") and txt("wake_time"):
+        base["sleep_window"] = f"{txt('bed_time')}-{txt('wake_time')}"  # night ending the morning of D
     try:  # a failed meal read must NEVER look like "no meals" (would delete real meals on rewrite)
         base["meals"] = _parse_meals(row["id"])
     except Exception as e:
@@ -1684,6 +1730,8 @@ def foodlog_get_range(start_date: str, end_date: str = "") -> list | dict:
                     "tdee_est": num("tdee_est"), "deficit_actual": _deficit_val(p),
                     "sync": (((p.get("sync") or {}).get("select")) or {}).get("name"),
                     "recovery": ({k: num(k) for k in _REC_KEYS if num(k) is not None} or None)})
+        if txt("bed_time") and txt("wake_time"):
+            out[-1]["sleep_window"] = f"{txt('bed_time')}-{txt('wake_time')}"
     out.sort(key=lambda x: x["date"] or "")
     _cput(_ck, out, 21600 if e < _today else 30)
     _bump("foodlog_read", out)

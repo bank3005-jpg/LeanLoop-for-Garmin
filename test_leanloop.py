@@ -1274,5 +1274,48 @@ ok("suggest: one-off drop is NOT the anchor - start from the load he did in rang
 _lr = [("2026-11-03", [_R(14.5, 10, 0), _R(14.5, 9, 0), _R(14.5, 8, 0)]), ("2026-11-09", [_R(12, 13, 0), _R(12, 12, 2), _R(12, 10, 0)])]
 ok("suggest: a drop after falling short of the range IS respected (stays at the lower load)", main._lift_suggest("Cable Lateral Raise", "3-4×10-15", _lr)["suggest"]["kg"] == 12)
 
+# --- bed / wake time on the FoodLog row (isolated from the core close) ---
+_svc, _svw, _svf, _svl = main.client, main._notion_write, main._find_row, main._log_training
+class _GSl:
+    def get_sleep_data(s, d): return {"dailySleepDTO": {"sleepStartTimestampLocal": 1794976806000, "sleepEndTimestampLocal": 1794998046000, "sleepTimeSeconds": 18660, "sleepScores": {"overall": {"value": 68}}}}
+    def get_training_readiness(s, d): return [{"score": 60}]
+    def get_activities_by_date(s, a, b): return []
+    def get_stats(s, d): return {"totalKilocalories": 2800}
+main.client = lambda: _GSl()
+ok("sleep window: real Garmin sample -> 04:40 / 10:34 local", main._sleep_window("2026-11-18") == {"bed_time": "04:40", "wake_time": "10:34"})
+class _GSn(_GSl):
+    def get_sleep_data(s, d): return {"dailySleepDTO": {"calendarDate": d}}
+main.client = lambda: _GSn()
+ok("sleep window: no window yet -> {} (never a guess)", main._sleep_window("2026-11-19") == {})
+class _GSx(_GSl):
+    def get_sleep_data(s, d): raise RuntimeError("garmin down")
+main.client = lambda: _GSx()
+ok("sleep window: Garmin error -> {} (never raises)", main._sleep_window("2026-11-19") == {})
+main.client = lambda: _GSl()
+_sw = []
+main._notion_write = lambda m, p, pl: (_sw.append(pl), {"id": "x"})[1]
+ok("fill: columns missing in schema -> does nothing", main._fill_sleep_window({"id": "pg", "properties": {"kcal": {"number": 1}}}, "d") is None and _sw == [])
+ok("fill: already filled -> never overwrites", main._fill_sleep_window({"id": "pg", "properties": {"bed_time": {"rich_text": [{"plain_text": "23:10"}]}, "wake_time": {"rich_text": []}}}, "d") is None and _sw == [])
+_e = {"id": "pg", "properties": {"bed_time": {"rich_text": []}, "wake_time": {"rich_text": []}}}
+ok("fill: empty columns -> writes ONLY bed/wake in its own PATCH", main._fill_sleep_window(_e, "d") == "04:40-10:34" and _sw == [{"properties": {"bed_time": {"rich_text": [{"text": {"content": "04:40"}}]}, "wake_time": {"rich_text": [{"text": {"content": "10:34"}}]}}}])
+def _wboom(m, p, pl): raise RuntimeError("400 bad")
+main._notion_write = _wboom
+ok("fill: Notion write error -> note, never raises", main._fill_sleep_window(_e, "d").startswith("error"))
+# full nightly close: sleep write failing must not block the TDEE/sync write
+_cw = []
+def _wsel(m, p, pl):
+    if "bed_time" in pl["properties"]: raise RuntimeError("400 sleep col")
+    _cw.append(sorted(pl["properties"])); return {"id": "x"}
+main._notion_write = _wsel
+main._find_row = lambda d: {"id": "pg", "properties": {"kcal": {"number": 2000}, "bed_time": {"rich_text": []}, "wake_time": {"rich_text": []}}}
+main._log_training = lambda d, a: {"created": 0, "failed": 0}
+_rc = main._close_one("2026-11-18")
+ok("close: sleep-column failure leaves the core close intact", _rc["status"] == "updated" and _cw and "tdee_est" in _cw[0] and _rc["sleep_window"].startswith("error"))
+main._notion_write = lambda m, p, pl: {"id": "x"}
+main._find_row = lambda d: {"id": "pg", "properties": {"kcal": {"number": 2000}, "tdee_est": {"number": 2800}, "sync": {"select": {"name": "synced"}}, "sleep_score": {"number": 68}, "readiness": {"number": 60}, "bed_time": {"rich_text": []}, "wake_time": {"rich_text": []}}}
+_rc = main._close_one("2026-11-18")
+ok("close: already-synced day still gets its bed/wake filled", _rc["status"] == "already-synced" and _rc.get("sleep_window") == "04:40-10:34")
+main.client, main._notion_write, main._find_row, main._log_training = _svc, _svw, _svf, _svl
+
 print("\n=== %d passed, %d failed ===" % (P[0], len(F)))
 if F: print("FAILURES:", F); raise SystemExit(1)
